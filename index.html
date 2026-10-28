@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="it" class="h-full">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>MountPro - Outdoor Explorer</title>
+    <meta name="description" content="The professional tool for hikers and mountaineers. Find bivouacs, fountains, and trails with deep filters and AI-powered weather conditions.">
+    <meta property="og:title" content="MountPro - Outdoor Explorer">
+    <meta property="og:description" content="The professional tool for hikers and mountaineers. Find bivouacs, fountains, and trails with deep filters and AI-powered weather conditions.">
+    <meta name="theme-color" content="#ea580c">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="MountPro">
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+    <link rel="icon" type="image/x-icon" href="/favicon.ico">
+    <link rel="manifest" href="/manifest.json">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
+    
+    <script>
+      // Shim for process.env to prevent crashes in browser environment
+      window.process = {
+        env: {
+          // INSERISCI QUI LA TUA API KEY DI GEMINI SE VUOI CHE FUNZIONI ONLINE
+          API_KEY: 'AIzaSyDJ6HjG6dD2fM7WqG2akYmsR0yOzZD1BY8' 
+        }
+      };
+    </script>
+
+    <style>
+        html, body, #root { height: 100%; margin: 0; padding: 0; overflow: hidden; }
+        body { font-family: 'Inter', sans-serif; }
+        .hide-scrollbar::-webkit-scrollbar { display: none; }
+        .hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+        .leaflet-container { background: #09090b !important; }
+        
+        /* Remove default Leaflet controls as we use custom ones */
+        .leaflet-control-zoom { display: none !important; }
+
+        /* Modern Dark Scale Control - Lower position */
+        .leaflet-control-scale-line {
+            background: rgba(24, 24, 27, 0.9) !important; /* Zinc-900 with opacity */
+            border: 1px solid rgba(63, 63, 70, 0.5) !important; /* Zinc-700 */
+            border-top: none !important;
+            color: #d4d4d8 !important; /* Zinc-300 */
+            border-radius: 4px;
+            padding: 2px 8px;
+            font-family: 'Inter', sans-serif;
+            font-size: 11px;
+            font-weight: 500;
+            text-shadow: none !important;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.3);
+            margin-bottom: 8px !important; 
+            margin-left: 16px !important;
+        }
+
+        /* Dark Mode Tile Filters - Balanced for Visibility */
+        .dark-tiles { 
+            /* Invert colors, rotate hue to fix colors, increased brightness to 120% for better visibility */
+            filter: invert(100%) hue-rotate(180deg) brightness(120%) contrast(90%) grayscale(10%); 
+        }
+
+        /* Status Animations */
+        @keyframes status-pulse {
+            0% { transform: scale(0.95); opacity: 0.5; }
+            50% { transform: scale(1.05); opacity: 1; }
+            100% { transform: scale(0.95); opacity: 0.5; }
+        }
+        .status-dot-pulse {
+            animation: status-pulse 2s infinite ease-in-out;
+        }
+
+        /* Base Range Slider Styling */
+        input[type=range] {
+            -webkit-appearance: none; 
+            width: 100%; 
+            background: transparent; 
+        }
+        input[type=range]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            height: 16px;
+            width: 16px;
+            border-radius: 50%;
+            background: #ea580c;
+            cursor: pointer;
+            margin-top: -6px; 
+            box-shadow: 0 0 0 2px #18181b;
+        }
+        input[type=range]::-webkit-slider-runnable-track {
+            width: 100%;
+            height: 4px;
+            cursor: pointer;
+            background: #3f3f46;
+            border-radius: 2px;
+        }
+
+        /* DUAL RANGE SLIDER OVERRIDES */
+        .range-input {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none; /* Let clicks pass through */
+            z-index: 20;
+        }
+        .range-input::-webkit-slider-thumb {
+            pointer-events: auto; /* Re-enable clicks for thumb */
+            position: relative;
+            z-index: 30;
+            margin-top: -6px; /* Align thumb vertically */
+        }
+        .range-input::-webkit-slider-runnable-track {
+            background: transparent !important; /* Hide default track */
+            border: none;
+        }
+
+        /* Leaflet Popup Dark Mode Overrides */
+        .leaflet-popup-content-wrapper {
+            background-color: #18181b !important; /* Zinc-900 */
+            color: #e4e4e7 !important; /* Zinc-200 */
+            border: 1px solid #3f3f46; /* Zinc-700 */
+            border-radius: 12px !important;
+            padding: 0 !important; /* Remove padding to handle it in inner HTML */
+            overflow: hidden;
+        }
+        .leaflet-popup-tip {
+            background-color: #18181b !important;
+            border: 1px solid #3f3f46;
+            border-top: none;
+            border-left: none;
+        }
+        .leaflet-popup-content {
+            margin: 0 !important;
+            line-height: 1.4;
+        }
+        .leaflet-popup-close-button {
+            display: none; /* We use custom close or click-away */
+        }
+    </style>
+<link rel="stylesheet" href="/index.css">
+</head>
+<body class="bg-zinc-950 text-zinc-100">
+    <div id="root"></div>
+    <script>
+      if ('serviceWorker' in navigator) {
+        window.addEventListener('load', () => {
+          navigator.serviceWorker.register('/sw.js', { scope: '/' }).then(reg => {
+            console.log('MountPro SW Registered', reg.scope);
+          }).catch(err => {
+            console.log('SW Registration failed', err);
+          });
+        });
+      }
+    </script>
+<script type="module" src="/index.tsx"></script>
+</body>
+</html>

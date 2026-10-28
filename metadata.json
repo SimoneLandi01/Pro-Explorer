@@ -1,0 +1,10 @@
+{
+  "name": "MountPro Explorer",
+  "description": "The professional tool for hikers and mountaineers. Find bivouacs, fountains, and trails with deep filters and AI-powered weather conditions.",
+  "requestFramePermissions": [
+    "geolocation"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
