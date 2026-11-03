@@ -31,7 +31,33 @@
 
     <style>
         html, body, #root { height: 100%; margin: 0; padding: 0; overflow: hidden; }
-        body { font-family: 'Inter', sans-serif; }
+        body { font-family: 'Inter', sans-serif; background-color: #09090b; color: #f4f4f5; }
+        
+        /* Modern Dark Mountain Scrollbar */
+        * {
+            scrollbar-width: thin;
+            scrollbar-color: #3f3f46 #18181b;
+        }
+        ::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #18181b;
+            border-radius: 9999px;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #3f3f46;
+            border-radius: 9999px;
+            border: 1px solid #27272a;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #ea580c;
+        }
+        ::-webkit-scrollbar-corner {
+            background: #18181b;
+        }
+
         .hide-scrollbar::-webkit-scrollbar { display: none; }
         .hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
         .leaflet-container { background: #09090b !important; }
@@ -117,27 +143,37 @@
             border: none;
         }
 
-        /* Leaflet Popup Dark Mode Overrides */
+        /* Leaflet Popup Dark Mode & Orange Accents */
         .leaflet-popup-content-wrapper {
             background-color: #18181b !important; /* Zinc-900 */
             color: #e4e4e7 !important; /* Zinc-200 */
-            border: 1px solid #3f3f46; /* Zinc-700 */
+            border: 1px solid #ea580c !important; /* Orange thin border */
             border-radius: 12px !important;
-            padding: 0 !important; /* Remove padding to handle it in inner HTML */
+            padding: 0 !important;
             overflow: hidden;
+            box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.6), 0 8px 10px -6px rgba(0, 0, 0, 0.4) !important;
         }
         .leaflet-popup-tip {
-            background-color: #18181b !important;
-            border: 1px solid #3f3f46;
-            border-top: none;
-            border-left: none;
+            background-color: #ea580c !important; /* Orange tip */
+            border: 1px solid #ea580c !important;
+            box-shadow: 0 4px 6px -1px rgba(234, 88, 12, 0.4) !important;
         }
         .leaflet-popup-content {
             margin: 0 !important;
             line-height: 1.4;
         }
         .leaflet-popup-close-button {
-            display: none; /* We use custom close or click-away */
+            display: none;
+        }
+        /* Custom Marker Popup - Ensure crisp positioning */
+        .custom-poi-marker-expanded {
+            overflow: visible !important;
+            background: transparent !important;
+            border: none !important;
+        }
+        .custom-poi-marker, .custom-poi-cluster {
+            background: transparent !important;
+            border: none !important;
         }
     </style>
 <link rel="stylesheet" href="/index.css">
@@ -145,9 +181,21 @@
 <body class="bg-zinc-950 text-zinc-100">
     <div id="root"></div>
     <script>
+      if ('caches' in window && navigator.onLine) {
+        caches.keys().then(keys => {
+          keys.forEach(k => {
+            if (k.startsWith('mountpro-app-v') && k !== 'mountpro-app-v6-offline') {
+              caches.delete(k);
+            }
+          });
+        }).catch(() => {});
+      }
       if ('serviceWorker' in navigator) {
         window.addEventListener('load', () => {
           navigator.serviceWorker.register('/sw.js', { scope: '/' }).then(reg => {
+            if (navigator.onLine) {
+              reg.update().catch(() => {});
+            }
             console.log('MountPro SW Registered', reg.scope);
           }).catch(err => {
             console.log('SW Registration failed', err);

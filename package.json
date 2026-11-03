@@ -9,11 +9,13 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "react": "^19.2.3",
     "@google/genai": "^1.34.0",
-    "react-dom": "^19.2.3",
+    "@types/supercluster": "^7.1.3",
+    "leaflet": "^1.9.4",
     "lucide-react": "^0.562.0",
-    "leaflet": "^1.9.4"
+    "react": "^19.2.3",
+    "react-dom": "^19.2.3",
+    "supercluster": "^9.1.0"
   },
   "devDependencies": {
     "@types/node": "^22.14.0",

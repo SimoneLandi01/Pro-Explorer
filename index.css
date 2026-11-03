@@ -7,6 +7,35 @@
   }
 }
 
+/* Custom Mountain Theme Dark Scrollbar */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #3f3f46 #18181b;
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: #18181b;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #3f3f46;
+  border-radius: 9999px;
+  border: 1px solid #27272a;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #ea580c;
+}
+
+::-webkit-scrollbar-corner {
+  background: #18181b;
+}
+
 /* Custom scrollbar utility */
 .no-scrollbar::-webkit-scrollbar {
   display: none;
@@ -14,4 +43,69 @@
 .no-scrollbar {
   -ms-overflow-style: none;
   scrollbar-width: none;
+}
+
+/* Map Popup Viewport & Bounds Safety */
+.custom-poi-marker-expanded {
+  z-index: 99999 !important;
+}
+
+.custom-poi-marker-expanded > div {
+  max-width: calc(100vw - 32px) !important;
+  box-sizing: border-box;
+}
+
+/* Leaflet pane marker z-index */
+.leaflet-pane.leaflet-marker-pane {
+  z-index: 600;
+}
+
+/* Radar Timeline Range Slider */
+input[type="range"].radar-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  background: transparent;
+  cursor: pointer;
+}
+
+input[type="range"].radar-slider::-webkit-slider-runnable-track {
+  height: 6px;
+  border-radius: 9999px;
+  background: #27272a;
+}
+
+input[type="range"].radar-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  margin-top: -5px;
+  height: 16px;
+  width: 16px;
+  border-radius: 50%;
+  background: #3b82f6;
+  border: 2px solid #ffffff;
+  box-shadow: 0 0 8px rgba(59, 130, 246, 0.7);
+  cursor: grab;
+  transition: transform 0.1s ease, background-color 0.15s ease;
+}
+
+input[type="range"].radar-slider::-webkit-slider-thumb:active {
+  cursor: grabbing;
+  transform: scale(1.2);
+  background: #60a5fa;
+}
+
+input[type="range"].radar-slider::-moz-range-track {
+  height: 6px;
+  border-radius: 9999px;
+  background: #27272a;
+}
+
+input[type="range"].radar-slider::-moz-range-thumb {
+  height: 16px;
+  width: 16px;
+  border-radius: 50%;
+  background: #3b82f6;
+  border: 2px solid #ffffff;
+  box-shadow: 0 0 8px rgba(59, 130, 246, 0.7);
+  cursor: grab;
 }

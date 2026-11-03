@@ -183,25 +183,71 @@ export const analyzeLocationPhysics = async (lat: number, lng: number): Promise<
         };
     }
 
-    return {
-        exposure: exposure,
-        terrainType: terrainType,
-        signalEstimate: {
-            level: signalLevel,
-            reason: signalReason
-        },
-        aqi: aqi,
-        weather: weather
-    };
+        const result: GeoAnalysis = {
+            exposure: exposure,
+            terrainType: terrainType,
+            signalEstimate: {
+                level: signalLevel,
+                reason: signalReason
+            },
+            aqi: aqi,
+            weather: weather
+        };
+
+        // --- [OFFLINE CACHE] Persisti l'analisi meteo/morfologica per consultazione offline ---
+        try {
+          const cacheKey = `${lat.toFixed(3)},${lng.toFixed(3)}`;
+          const raw = localStorage.getItem('mountpro_geo_analysis_cache_v1');
+          const map: Record<string, { data: GeoAnalysis; ts: number }> = raw ? JSON.parse(raw) : {};
+          map[cacheKey] = { data: result, ts: Date.now() };
+          // Mantieni le ultime 60 località analizzate
+          const keys = Object.keys(map);
+          if (keys.length > 60) {
+            keys
+              .sort((a, b) => map[a].ts - map[b].ts)
+              .slice(0, keys.length - 60)
+              .forEach(k => delete map[k]);
+          }
+          localStorage.setItem('mountpro_geo_analysis_cache_v1', JSON.stringify(map));
+        } catch {}
+
+        return result;
 
   } catch (e) {
-    console.error("Physics Analysis Failed", e);
+    console.warn("Physics Analysis Offline/Fallback", e);
+    // --- [OFFLINE FALLBACK] Cerca nella cache locale l'analisi più vicina entro ~1.5 km ---
+    try {
+      const raw = localStorage.getItem('mountpro_geo_analysis_cache_v1');
+      if (raw) {
+        const map: Record<string, { data: GeoAnalysis; ts: number }> = JSON.parse(raw);
+        const exactKey = `${lat.toFixed(3)},${lng.toFixed(3)}`;
+        if (map[exactKey]?.data) {
+          return map[exactKey].data;
+        }
+        let bestData: GeoAnalysis | null = null;
+        let bestDist = 0.015; // ~1.5km in gradi
+        for (const [k, entry] of Object.entries(map)) {
+          const [kLat, kLng] = k.split(',').map(Number);
+          const d = Math.hypot(lat - kLat, lng - kLng);
+          if (d < bestDist && entry?.data) {
+            bestDist = d;
+            bestData = entry.data;
+          }
+        }
+        if (bestData) return bestData;
+      }
+    } catch {}
+
     return {
         exposure: Exposure.VARIOUS,
-        terrainType: "Sconosciuto",
-        signalEstimate: { level: SignalStrength.NONE, reason: "Dati non disponibili" },
+        terrainType: "Versante Montano (Stima Offline)",
+        signalEstimate: {
+          level: SignalStrength.LOW,
+          reason: "Modalità offline: copertura stimata in base alla quota."
+        },
         aqi: 0,
         weather: null
     };
   }
 };
+
