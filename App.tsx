@@ -3,7 +3,7 @@
 // Modifications should be minimal to preserve established functionality.
 
 import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react';
-import Supercluster from 'supercluster';
+import Supercluster, { ClusterProperties, PointFeature } from 'supercluster';
 import { fetchOsmPois, searchOsmPoisByName, enrichPoisWithAltitude, fetchAltitudeForCoordinate, analyzeGpxTrailAndPeaks, GpxTrailAnalysisResult, computeHikingTourRoute, TourWaypoint, ComputedTourRoute, preloadOfflineAreaTrailNetwork, seedElevationCacheFromPois, seedElevationCacheFromPoints } from './services/osmService.ts'; 
 import { MOCK_POIS } from './constants.tsx';
 import { REGIONAL_VENETO_TRENTINO_POIS } from './services/regionalData.ts';
@@ -2262,14 +2262,17 @@ ${trkptsXml}
       coordinates: { lat: inspectedLocation.lat, lng: inspectedLocation.lng },
       altitude: inspectedLocation.altitude || 0,
       exposure: Exposure.SOUTH,
+      signal: SignalStrength.NONE,
       capacity: 0,
       hasWater: false,
       hasRoof: false,
+      hasElectricity: false,
       hasFireplace: false,
       isFree: true,
       isOpen: true,
       source: 'local',
       description: `Punto selezionato su mappa (${inspectedLocation.lat.toFixed(5)}, ${inspectedLocation.lng.toFixed(5)}).`,
+      imageUrl: '',
     };
     setAllPois(prev => [newWaypoint, ...prev]);
     await dbService.savePois([newWaypoint]);
@@ -2359,7 +2362,7 @@ ${trkptsXml}
                 this._lastEvent = e;
                 L.DomUtil.addClass(document.body, 'leaflet-dragging');
                 this._lastTarget = e.target || e.srcElement;
-                if (window.SVGElementInstance && this._lastTarget instanceof SVGElementInstance) {
+                if ((window as any).SVGElementInstance && this._lastTarget instanceof (window as any).SVGElementInstance) {
                   this._lastTarget = this._lastTarget.correspondingUseElement;
                 }
                 L.DomUtil.addClass(this._lastTarget, 'leaflet-drag-target');
@@ -2891,7 +2894,7 @@ ${trkptsXml}
       const isCluster = item.properties && 'cluster' in item.properties && (item.properties as any).cluster;
 
       if (isCluster) {
-        const clusterProps = item.properties as Supercluster.ClusterProperties;
+        const clusterProps = item.properties as ClusterProperties;
         const clusterId = clusterProps.cluster_id;
         const count = clusterProps.point_count;
         const key = `cluster-${clusterId}`;
@@ -3026,7 +3029,7 @@ ${trkptsXml}
       ? filteredPois.filter(p => p.id !== selectedPoi.id)
       : filteredPois;
 
-    const features: Supercluster.PointFeature<{ poi: POI }>[] = pointsToIndex.map(poi => ({
+    const features: PointFeature<{ poi: POI }>[] = pointsToIndex.map(poi => ({
       type: 'Feature',
       properties: { poi },
       geometry: {

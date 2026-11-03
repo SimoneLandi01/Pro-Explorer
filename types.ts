@@ -53,6 +53,9 @@ export interface POI {
 
   // User Data
   userNote?: string;       // Personal user comment/note
+  isFree?: boolean;
+  isOpen?: boolean;
+  source?: string;
 }
 
 export interface HourlyForecast {
