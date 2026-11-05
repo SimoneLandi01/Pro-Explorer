@@ -56,6 +56,11 @@ export interface POI {
   isFree?: boolean;
   isOpen?: boolean;
   source?: string;
+
+  // OsmAnd-style Search Metadata (opzionali, non alterano la logica POI pre-esistente)
+  categoryLabel?: string;  // es. "Picco montuoso", "Ruscello", "Riserva naturale", "Valle", "Pensilina o ricovero", "Strada"
+  locality?: string;       // es. "Castello Tesino"
+  osmSubkind?: 'peak' | 'saddle' | 'valley' | 'stream' | 'water' | 'reserve' | 'shelter' | 'bivouac' | 'refuge' | 'road' | 'fountain' | 'place';
 }
 
 export interface HourlyForecast {

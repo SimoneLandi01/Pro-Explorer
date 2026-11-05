@@ -4,12 +4,44 @@
 
 import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react';
 import Supercluster, { ClusterProperties, PointFeature } from 'supercluster';
-import { fetchOsmPois, searchOsmPoisByName, enrichPoisWithAltitude, fetchAltitudeForCoordinate, analyzeGpxTrailAndPeaks, GpxTrailAnalysisResult, computeHikingTourRoute, TourWaypoint, ComputedTourRoute, preloadOfflineAreaTrailNetwork, seedElevationCacheFromPois, seedElevationCacheFromPoints } from './services/osmService.ts'; 
+import { fetchOsmPois, searchOsmPoisByName, classifyOsmSearchFeature, resolvePoiLocality, enrichPoisWithAltitude, fetchAltitudeForCoordinate, analyzeGpxTrailAndPeaks, GpxTrailAnalysisResult, computeHikingTourRoute, TourWaypoint, ComputedTourRoute, preloadOfflineAreaTrailNetwork, seedElevationCacheFromPois, seedElevationCacheFromPoints } from './services/osmService.ts'; 
 import { MOCK_POIS } from './constants.tsx';
 import { REGIONAL_VENETO_TRENTINO_POIS } from './services/regionalData.ts';
 import { dbService } from './services/dbService.ts';
 import { analyzeLocationPhysics, GeoAnalysis } from './services/analysisService.ts';
 import { usePWAInstall } from './usePWAInstall.ts';
+import {
+  PREDEFINED_ALPINE_REGIONS,
+  OfflineMapPackage,
+  PredefinedAlpineRegion,
+  OfflineDownloadProgress,
+  OfflineMapStyle,
+  AlpineMacroZone,
+  getOfflineMapStyleMeta,
+  buildRegionPackageId,
+  estimateOfflinePackageStats,
+  getSavedOfflinePackages,
+  deleteOfflinePackage,
+  downloadCompleteOfflinePackage,
+  TILE_CACHE_NAME,
+} from './services/offlineMapService.ts';
+import {
+  UserAppSettings,
+  UserPacePreset,
+  PACE_PRESET_CONFIGS,
+  DEFAULT_USER_SETTINGS,
+  loadUserSettings,
+  saveUserSettings,
+  loadSavedMapStartupState,
+  saveMapStartupState,
+  loadSavedFiltersStartupState,
+  saveFiltersStartupState,
+  formatCoordinatesDms,
+  formatCoordinatesByPreference,
+  buildSosEmergencyReport,
+  triggerFullBackupDownload,
+  MountProFullBackupPayload,
+} from './services/settingsService.ts';
 import { 
   Map as MapIcon, 
   List, 
@@ -80,6 +112,7 @@ import {
   Clock,
   ThermometerSun,
   Eye, 
+  EyeOff,
   Gauge, 
   Umbrella, 
   Calendar,
@@ -94,7 +127,15 @@ import {
   MapPin,
   BookOpen,
   Leaf,
-  CloudSun
+  CloudSun,
+  Settings,
+  ShieldAlert,
+  User,
+  Sliders,
+  Upload,
+  Copy,
+  PhoneCall,
+  BatteryCharging
 } from 'lucide-react';
 import L from 'leaflet';
 import { POI, POIType, Exposure, SignalStrength } from './types.ts';
@@ -240,16 +281,20 @@ const computeCaiWalkingEstimate = (
   fromAlt: number,
   toLat: number,
   toLng: number,
-  toAlt: number
+  toAlt: number,
+  pace?: { horizSpeedKmh?: number; ascentSpeedMh?: number; descentSpeedMh?: number }
 ) => {
   const linearDistKm = getDistance(fromLat, fromLng, toLat, toLng);
   // Fattore tortuosità sentiero alpino medio (~1.25x rispetto alla linea d'aria)
   const trailDistKm = linearDistKm * 1.25;
   const deltaH = Math.round((toAlt || 0) - (fromAlt || 0));
 
-  // Formula CAI / Munter: 4 km/h orizzontale, +350 m/h salita, -500 m/h discesa
-  const horizHours = trailDistKm / 4.0;
-  const vertHours = deltaH >= 0 ? deltaH / 350.0 : Math.abs(deltaH) / 500.0;
+  // Formula CAI / Munter calibrata con profilo passo utente (default 4 km/h, +350 m/h, -500 m/h)
+  const hSpeed = Math.max(1.5, pace?.horizSpeedKmh || 4.0);
+  const upSpeed = Math.max(100, pace?.ascentSpeedMh || 350.0);
+  const downSpeed = Math.max(150, pace?.descentSpeedMh || 500.0);
+  const horizHours = trailDistKm / hSpeed;
+  const vertHours = deltaH >= 0 ? deltaH / upSpeed : Math.abs(deltaH) / downSpeed;
   const totalHours = Math.max(horizHours, vertHours) + 0.5 * Math.min(horizHours, vertHours);
   const totalMinutes = Math.max(5, Math.round(totalHours * 60));
   const h = Math.floor(totalMinutes / 60);
@@ -589,6 +634,7 @@ interface LoadedTrack {
   points: TrackPoint[];
   stats: TrackStats;
   color: string;
+  hidden?: boolean; // Supporto mostra/nascondi traccia GPX senza rimuoverla
 }
 
 // --- [MODULAR FEATURE 1 & 4] GPX WEATHER WATCH & TARGET LOCK INTERFACES ---
@@ -623,16 +669,24 @@ interface TargetLockPoint {
   altitude: number | null;
 }
 
-const TRACK_COLORS = ['#ea580c', '#d946ef'];
+// Tavolozza multi-traccia ad alto contrasto outdoor (supporta tracce GPX multiple senza limite di 2)
+const TRACK_COLORS = ['#ea580c', '#d946ef', '#06b6d4', '#10b981', '#eab308', '#3b82f6', '#f43f5e', '#a855f7'];
 
 export default function App() {
+  // --- [MODULAR FEATURE 6] STATO IMPOSTAZIONI UTENTE & CONFIGURAZIONE APP ---
+  const [userSettings, setUserSettings] = useState<UserAppSettings>(() => loadUserSettings());
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [sosResolvedAltitude, setSosResolvedAltitude] = useState<number | null>(null);
+  const [isResolvingSosAltitude, setIsResolvingSosAltitude] = useState(false);
+  const backupFileInputRef = useRef<HTMLInputElement>(null);
+
   const [isSidebarOpen, setIsSidebarOpen] = useState(false); 
   const [selectedPoi, setSelectedPoi] = useState<POI | null>(null);
   const [isDetailPanelOpen, setIsDetailPanelOpen] = useState(false);
   const [viewMode, setViewMode] = useState<'list' | 'map'>('map'); 
   const [geoAnalysis, setGeoAnalysis] = useState<GeoAnalysis | null>(null); 
   const [isLoadingAnalysis, setIsLoadingAnalysis] = useState(false);
-  const [isOffline, setIsOffline] = useState(!navigator.onLine);
+  const [isOffline, setIsOffline] = useState(() => !navigator.onLine || loadUserSettings().forceOfflineMode);
   const [isDownloading, setIsDownloading] = useState(false);
   const [downloadProgress, setDownloadProgress] = useState<'idle' | 'fetching' | 'saving' | 'done'>('idle');
   const [downloadCount, setDownloadCount] = useState(0);
@@ -695,19 +749,69 @@ export default function App() {
        return new Set();
      }
   });
-  const [showFavoritesOnly, setShowFavoritesOnly] = useState(false);
-  const mapViewState = useRef({ center: { lat: 46.2, lng: 11.4 }, zoom: 9 });
+  const [showFavoritesOnly, setShowFavoritesOnly] = useState<boolean>(() => {
+    const initSettings = loadUserSettings();
+    if (initSettings.autoSaveFilters) {
+      const savedF = loadSavedFiltersStartupState();
+      if (savedF) return Boolean(savedF.showFavoritesOnly);
+    }
+    return false;
+  });
+  const mapViewState = useRef((() => {
+    const initSettings = loadUserSettings();
+    if (initSettings.autoSaveMapPosition) {
+      const savedM = loadSavedMapStartupState();
+      if (savedM) {
+        return { center: { lat: savedM.lat, lng: savedM.lng }, zoom: savedM.zoom };
+      }
+    }
+    return { center: { lat: 46.2, lng: 11.4 }, zoom: 9 };
+  })());
   
   const [isMapReady, setIsMapReady] = useState(false);
 
   // SCROLL REF FOR DETAIL PANEL
   const detailScrollRef = useRef<HTMLDivElement>(null);
 
-  // SEARCH AUTOCOMPLETE STATE
+  // SEARCH AUTOCOMPLETE STATE (MODALITÀ PAGINA INTERA STILE OSMAND CON ORDINAMENTO, CATEGORIE E RICERCHE RECENTI)
   const [searchSuggestions, setSearchSuggestions] = useState<POI[]>([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
+  const [searchCategoryFilter, setSearchCategoryFilter] = useState<'all' | 'bivouac' | 'refuge' | 'water' | 'peaks' | 'nearby'>('all');
+  const [searchOsmSubkindFilter, setSearchOsmSubkindFilter] = useState<string>('all');
+  const [searchSortMode, setSearchSortMode] = useState<'relevance' | 'distance'>('relevance');
+  const [activeSuggestionIndex, setActiveSuggestionIndex] = useState<number>(-1);
+  const [isRemoteAutocompleteLoading, setIsRemoteAutocompleteLoading] = useState(false);
+  const [recentSearchPois, setRecentSearchPois] = useState<POI[]>(() => {
+    try {
+      const raw = localStorage.getItem('mountpro_recent_searches_v1');
+      if (!raw) return [];
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed.slice(0, 12) : [];
+    } catch {
+      return [];
+    }
+  });
   const searchTimeoutRef = useRef<any>(null);
   const searchContainerRef = useRef<HTMLDivElement>(null);
+  const fullScreenSearchInputRef = useRef<HTMLInputElement>(null);
+
+  const savePoiToRecentSearches = useCallback((poi: POI) => {
+    setRecentSearchPois(prev => {
+      const next = [poi, ...prev.filter(item => item.id !== poi.id)].slice(0, 8);
+      try {
+        localStorage.setItem('mountpro_recent_searches_v1', JSON.stringify(next));
+      } catch {}
+      return next;
+    });
+  }, []);
+
+  const clearRecentSearches = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation();
+    setRecentSearchPois([]);
+    try {
+      localStorage.removeItem('mountpro_recent_searches_v1');
+    } catch {}
+  }, []);
   
   // PENDING FOCUS REF (For robust List->Map transition)
   const pendingFocusRef = useRef<POI | null>(null);
@@ -826,6 +930,12 @@ export default function App() {
               setCenterWeather(parsedCw);
             }
           }
+          // Carica i pacchetti Mappe Offline salvati in IndexedDB
+          const savedOfflinePkgs = await getSavedOfflinePackages();
+          if (savedOfflinePkgs.length > 0) {
+            setSavedOfflinePackages(savedOfflinePkgs);
+            setOfflineManagerTab('downloaded');
+          }
         } catch (offlineRestoreErr) {
           console.warn("Offline state restore error:", offlineRestoreErr);
         }
@@ -880,8 +990,7 @@ export default function App() {
       };
   }, []);
 
-  // useOnClickOutside removed for WeatherPanelRef because it's now FullScreen/Modal style
-  useOnClickOutside(searchContainerRef, () => setShowSuggestions(false));
+  // La ricerca si apre ora come vista dedicata a tutto schermo stile OsmAnd (si chiude con freccia Indietro, ESC o selezione risultato)
 
   const saveToDb = async (pois: POI[]) => {
      if (pois.length > 0) {
@@ -1256,23 +1365,293 @@ ${wptsXml}
   const [isSearchingArea, setIsSearchingArea] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [isGlobalSearching, setIsGlobalSearching] = useState(false);
-  const [mapStyle, setMapStyle] = useState<'standard' | 'satellite' | 'hybrid'>('standard');
+  const [mapStyle, setMapStyle] = useState<'standard' | 'satellite' | 'hybrid'>(() => {
+    const initSettings = loadUserSettings();
+    if (initSettings.autoSaveMapPosition) {
+      const savedM = loadSavedMapStartupState();
+      if (savedM?.mapStyle) return savedM.mapStyle;
+    }
+    return initSettings.defaultMapStyle || 'standard';
+  });
   const [isLayersMenuOpen, setIsLayersMenuOpen] = useState(false);
+
+  // --- [MODULAR FEATURE 5] CENTRO MAPPE OFFLINE (STILE KOMOOT / MAPY.CZ / OSMAND) ---
+  // Stati modulari per gestione pacchetti regionali, selezione riquadro personalizzato e stato download
+  const [isOfflineManagerOpen, setIsOfflineManagerOpen] = useState(false);
+  const [offlineManagerTab, setOfflineManagerTab] = useState<'downloaded' | 'regions' | 'custom'>('regions');
+  const [savedOfflinePackages, setSavedOfflinePackages] = useState<OfflineMapPackage[]>([]);
+  const [activeDownloadProgress, setActiveDownloadProgress] = useState<OfflineDownloadProgress | null>(null);
+  const [customAreaSelecting, setCustomAreaSelecting] = useState(false);
+  const [customAreaNameDraft, setCustomAreaNameDraft] = useState('');
+  const [offlineDownloadStyle, setOfflineDownloadStyle] = useState<OfflineMapStyle>('standard');
+  const [selectedMacroZone, setSelectedMacroZone] = useState<AlpineMacroZone>('Tutte');
+  const [regionSearchFilter, setRegionSearchFilter] = useState('');
+  const [downloadedTypeFilter, setDownloadedTypeFilter] = useState<'all' | OfflineMapStyle>('all');
+  const [showOfflineBoundsOnMap, setShowOfflineBoundsOnMap] = useState(true);
+  const [currentViewportBounds, setCurrentViewportBounds] = useState<{
+    south: number;
+    west: number;
+    north: number;
+    east: number;
+  }>({ south: 46.32, west: 11.65, north: 46.68, east: 12.35 });
+  const offlineDownloadAbortRef = useRef<AbortController | null>(null);
+  const offlineBoundsLayerGroupRef = useRef<L.LayerGroup | null>(null);
   
-  // Filters (selezione multipla tipologie, o nessuna - all'avvio solo la mappa pulita)
-  const [selectedTypes, setSelectedTypes] = useState<POIType[]>([]);
+  // Filters (con ripristino automatico dei filtri preferiti al riavvio se abilitato in userSettings)
+  const initialSavedFilters = useMemo(() => {
+    const initSettings = loadUserSettings();
+    return initSettings.autoSaveFilters ? loadSavedFiltersStartupState() : null;
+  }, []);
+  const [selectedTypes, setSelectedTypes] = useState<POIType[]>(() => initialSavedFilters?.selectedTypes || []);
   const toggleType = (t: POIType) => {
     setSelectedTypes(prev => prev.includes(t) ? prev.filter(item => item !== t) : [...prev, t]);
   };
-  const [minAltitude, setMinAltitude] = useState(0);
-  const [maxAltitude, setMaxAltitude] = useState(4810);
-  const [selectedExposures, setSelectedExposures] = useState<Exposure[]>([]); 
-  const [filterWater, setFilterWater] = useState(false);
-  const [filterRoof, setFilterRoof] = useState(false);
-  const [minCapacity, setMinCapacity] = useState(0);
-  const [filterFireplace, setFilterFireplace] = useState(false);
-  const [filterFee, setFilterFee] = useState(false); 
-  const [filterOpen, setFilterOpen] = useState(false); 
+  const [minAltitude, setMinAltitude] = useState<number>(() => initialSavedFilters?.minAltitude ?? 0);
+  const [maxAltitude, setMaxAltitude] = useState<number>(() => initialSavedFilters?.maxAltitude ?? 4810);
+  const [selectedExposures, setSelectedExposures] = useState<Exposure[]>(() => initialSavedFilters?.selectedExposures || []); 
+  const [filterWater, setFilterWater] = useState<boolean>(() => Boolean(initialSavedFilters?.filterWater));
+  const [filterRoof, setFilterRoof] = useState<boolean>(() => Boolean(initialSavedFilters?.filterRoof));
+  const [minCapacity, setMinCapacity] = useState<number>(() => initialSavedFilters?.minCapacity ?? 0);
+  const [filterFireplace, setFilterFireplace] = useState<boolean>(() => Boolean(initialSavedFilters?.filterFireplace));
+  const [filterFee, setFilterFee] = useState<boolean>(() => Boolean(initialSavedFilters?.filterFee)); 
+  const [filterOpen, setFilterOpen] = useState<boolean>(() => Boolean(initialSavedFilters?.filterOpen)); 
+
+  // --- [MODULAR FEATURE 6] PERSISTENZA AUTOMATICA IMPOSTAZIONI UTENTE, FILTRI & STILE MAPPA ---
+  const userSettingsRef = useRef(userSettings);
+  useEffect(() => {
+    userSettingsRef.current = userSettings;
+    saveUserSettings(userSettings);
+    setIsOffline(!navigator.onLine || userSettings.forceOfflineMode);
+  }, [userSettings]);
+
+  useEffect(() => {
+    if (!userSettings.autoSaveFilters) return;
+    saveFiltersStartupState({
+      selectedTypes,
+      minAltitude,
+      maxAltitude,
+      selectedExposures,
+      filterWater,
+      filterRoof,
+      minCapacity,
+      filterFireplace,
+      filterFee,
+      filterOpen,
+      showFavoritesOnly,
+    });
+  }, [
+    userSettings.autoSaveFilters,
+    selectedTypes,
+    minAltitude,
+    maxAltitude,
+    selectedExposures,
+    filterWater,
+    filterRoof,
+    minCapacity,
+    filterFireplace,
+    filterFee,
+    filterOpen,
+    showFavoritesOnly,
+  ]);
+
+  useEffect(() => {
+    if (!userSettings.autoSaveMapPosition) return;
+    saveMapStartupState({
+      lat: mapViewState.current.center.lat,
+      lng: mapViewState.current.center.lng,
+      zoom: mapViewState.current.zoom,
+      mapStyle,
+    });
+  }, [mapStyle, userSettings.autoSaveMapPosition]);
+
+  // Risoluzione quota DEM puntuale quando si apre la pagina Impostazioni (per il modulo SOS 112)
+  useEffect(() => {
+    if (!isSettingsOpen) return;
+    const coords = userLocation || mapViewState.current.center;
+    setIsResolvingSosAltitude(true);
+    fetchAltitudeForCoordinate(coords.lat, coords.lng)
+      .then(alt => {
+        setSosResolvedAltitude(alt);
+        setIsResolvingSosAltitude(false);
+      })
+      .catch(() => setIsResolvingSosAltitude(false));
+  }, [isSettingsOpen, userLocation]);
+
+  const updateUserSettings = useCallback((patch: Partial<UserAppSettings>) => {
+    setUserSettings(prev => ({ ...prev, ...patch }));
+  }, []);
+
+  const applyPacePreset = useCallback((preset: UserPacePreset) => {
+    if (preset === 'custom') {
+      setUserSettings(prev => ({ ...prev, pacePreset: 'custom' }));
+      return;
+    }
+    const cfg = PACE_PRESET_CONFIGS[preset];
+    setUserSettings(prev => ({
+      ...prev,
+      pacePreset: preset,
+      horizSpeedKmh: cfg.horizSpeedKmh,
+      ascentSpeedMh: cfg.ascentSpeedMh,
+      descentSpeedMh: cfg.descentSpeedMh,
+    }));
+    showToast(`Profilo passo impostato: ${cfg.label}`);
+  }, []);
+
+  // Esporta Backup Completo JSON di tutti i dati utente
+  const handleExportFullBackupJson = useCallback(() => {
+    const customWaypoints = allPois.filter(
+      p => p.id.startsWith('custom-') || p.source === 'local'
+    );
+    const userNotesMap: Record<string, string> = {};
+    allPois.forEach(p => {
+      if (p.userNote && p.userNote.trim()) {
+        userNotesMap[p.id] = p.userNote.trim();
+      }
+    });
+    try {
+      const rawNotes = localStorage.getItem('mountpro_notes_backup');
+      if (rawNotes) {
+        const parsed = JSON.parse(rawNotes);
+        Object.entries(parsed).forEach(([k, v]) => {
+          if (typeof v === 'string' && v.trim()) userNotesMap[k] = v.trim();
+        });
+      }
+    } catch {}
+
+    const payload: MountProFullBackupPayload = {
+      version: '1.0',
+      exportedAt: new Date().toISOString(),
+      app: 'MountPro Explorer',
+      userSettings,
+      favorites: Array.from(favorites),
+      userNotes: userNotesMap,
+      customWaypoints,
+      gpxTracks: tracks,
+      tourWaypoints,
+      mapStartup: {
+        lat: mapViewState.current.center.lat,
+        lng: mapViewState.current.center.lng,
+        zoom: mapViewState.current.zoom,
+        mapStyle,
+      },
+      filtersStartup: {
+        selectedTypes,
+        minAltitude,
+        maxAltitude,
+        selectedExposures,
+        filterWater,
+        filterRoof,
+        minCapacity,
+        filterFireplace,
+        filterFee,
+        filterOpen,
+        showFavoritesOnly,
+      },
+    };
+    triggerFullBackupDownload(payload);
+    showToast('Backup completo .JSON esportato con successo!');
+  }, [
+    allPois,
+    userSettings,
+    favorites,
+    tracks,
+    tourWaypoints,
+    mapStyle,
+    selectedTypes,
+    minAltitude,
+    maxAltitude,
+    selectedExposures,
+    filterWater,
+    filterRoof,
+    minCapacity,
+    filterFireplace,
+    filterFee,
+    filterOpen,
+    showFavoritesOnly,
+  ]);
+
+  // Importa Backup Completo JSON e ripristina impostazioni, preferiti, note, tracce GPX e tour
+  const handleImportFullBackupJson = useCallback(
+    (event: React.ChangeEvent<HTMLInputElement>) => {
+      const file = event.target.files?.[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = async e => {
+        try {
+          const text = e.target?.result as string;
+          const parsed = JSON.parse(text) as Partial<MountProFullBackupPayload>;
+          if (!parsed || typeof parsed !== 'object') {
+            showToast('File di backup JSON non valido.');
+            return;
+          }
+
+          if (parsed.userSettings) {
+            setUserSettings(prev => ({ ...prev, ...parsed.userSettings }));
+          }
+          if (Array.isArray(parsed.favorites)) {
+            const favSet = new Set(parsed.favorites);
+            setFavorites(favSet);
+            localStorage.setItem('mountpro_favorites', JSON.stringify(parsed.favorites));
+          }
+          if (parsed.userNotes && typeof parsed.userNotes === 'object') {
+            localStorage.setItem('mountpro_notes_backup', JSON.stringify(parsed.userNotes));
+          }
+          if (Array.isArray(parsed.customWaypoints) || parsed.userNotes) {
+            setAllPois(prev => {
+              const map = new Map<string, POI>();
+              prev.forEach(p => map.set(p.id, p));
+              if (Array.isArray(parsed.customWaypoints)) {
+                parsed.customWaypoints.forEach((cw: POI) => {
+                  if (cw && cw.id) map.set(cw.id, cw);
+                });
+              }
+              if (parsed.userNotes) {
+                Object.entries(parsed.userNotes).forEach(([id, note]) => {
+                  const ex = map.get(id);
+                  if (ex && typeof note === 'string') {
+                    map.set(id, { ...ex, userNote: note });
+                  }
+                });
+              }
+              const merged = Array.from(map.values());
+              dbService.savePois(merged);
+              return merged;
+            });
+          }
+          if (Array.isArray(parsed.gpxTracks)) {
+            setTracks(parsed.gpxTracks);
+            if (parsed.gpxTracks.length > 0) {
+              setFocusedTrackId(parsed.gpxTracks[0].id);
+            }
+          }
+          if (Array.isArray(parsed.tourWaypoints)) {
+            setTourWaypoints(parsed.tourWaypoints);
+          }
+          if (parsed.filtersStartup) {
+            const fs = parsed.filtersStartup;
+            if (Array.isArray(fs.selectedTypes)) setSelectedTypes(fs.selectedTypes);
+            if (typeof fs.minAltitude === 'number') setMinAltitude(fs.minAltitude);
+            if (typeof fs.maxAltitude === 'number') setMaxAltitude(fs.maxAltitude);
+            if (Array.isArray(fs.selectedExposures)) setSelectedExposures(fs.selectedExposures);
+            setFilterWater(Boolean(fs.filterWater));
+            setFilterRoof(Boolean(fs.filterRoof));
+            if (typeof fs.minCapacity === 'number') setMinCapacity(fs.minCapacity);
+            setFilterFireplace(Boolean(fs.filterFireplace));
+            setFilterFee(Boolean(fs.filterFee));
+            setFilterOpen(Boolean(fs.filterOpen));
+            setShowFavoritesOnly(Boolean(fs.showFavoritesOnly));
+          }
+          showToast('Backup JSON ripristinato con successo!');
+        } catch (err) {
+          console.error('Backup JSON import error:', err);
+          showToast('Errore nella lettura del file di backup JSON.');
+        }
+      };
+      reader.readAsText(file);
+      event.target.value = '';
+    },
+    []
+  );
   
   // --- [MODULAR OFFLINE SYNC] Persistenza automatica in IndexedDB per utilizzo in quota senza rete ---
   useEffect(() => {
@@ -1411,7 +1790,7 @@ ${wptsXml}
   // Removed click outside for DetailPanel since it's full screen
 
   useEffect(() => {
-    const handleOnline = () => setIsOffline(false);
+    const handleOnline = () => setIsOffline(userSettingsRef.current.forceOfflineMode ? true : false);
     const handleOffline = () => setIsOffline(true);
     window.addEventListener('online', handleOnline);
     window.addEventListener('offline', handleOffline);
@@ -1451,52 +1830,206 @@ ${wptsXml}
     }
   }, [selectedPoi?.id, isOffline]);
 
+  // Funzione helper per normalizzare accenti e punteggiatura nella ricerca testuale
+  const normalizeSearchText = useCallback((str: string) => {
+    return (str || '')
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .trim();
+  }, []);
+
+  const matchesSearchCategory = useCallback(
+    (poi: POI, cat: 'all' | 'bivouac' | 'refuge' | 'water' | 'peaks' | 'nearby') => {
+      if (cat === 'all' || cat === 'nearby') return true;
+      if (cat === 'bivouac') return poi.type === POIType.BIVOUAC;
+      if (cat === 'refuge') return poi.type === POIType.REFUGE;
+      if (cat === 'water') return poi.type === POIType.FOUNTAIN || poi.hasWater;
+      if (cat === 'peaks') return poi.type === POIType.VIEWPOINT || poi.type === POIType.PICNIC;
+      return true;
+    },
+    []
+  );
+
+  // Arricchisce anche i POI del database locale con le etichette OsmAnd (es. "Picco montuoso", "Bivacco", "Rifugio", "Castello Tesino")
+  const enrichPoiWithOsmAndMeta = useCallback((poi: POI): POI => {
+    if (poi.categoryLabel && poi.osmSubkind && poi.locality) return poi;
+    const synthTags: Record<string, any> = {
+      name: poi.name,
+      tourism:
+        poi.type === POIType.BIVOUAC
+          ? 'wilderness_hut'
+          : poi.type === POIType.REFUGE
+          ? 'alpine_hut'
+          : poi.type === POIType.PICNIC
+          ? 'picnic_site'
+          : undefined,
+      amenity: poi.type === POIType.FOUNTAIN ? 'drinking_water' : undefined,
+      natural: poi.type === POIType.VIEWPOINT ? 'peak' : undefined,
+    };
+    const classified = classifyOsmSearchFeature(synthTags, undefined, undefined, poi.name);
+    const resolvedLoc =
+      poi.locality ||
+      resolvePoiLocality({}, {}, poi.coordinates.lat, poi.coordinates.lng);
+    return {
+      ...poi,
+      categoryLabel: poi.categoryLabel || classified.categoryLabel,
+      osmSubkind: poi.osmSubkind || classified.osmSubkind,
+      locality: resolvedLoc || undefined,
+    };
+  }, []);
+
+  // Calcola suggerimenti intelligenti: multi-token, insensibile agli accenti, ordinato per rilevanza o distanza dal centro mappa/GPS
   useEffect(() => {
-      if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
+    if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
+    setActiveSuggestionIndex(-1);
 
-      if (searchQuery.trim().length < 2) {
-          setSearchSuggestions([]);
-          setShowSuggestions(false);
-          return;
+    const refOrigin = userLocation || mapViewState.current.center;
+    const rawTrimmed = searchQuery.trim();
+
+    // Se la barra è vuota (< 2 caratteri), mostra i punti più vicini quando il pannello ricerca è aperto
+    if (rawTrimmed.length < 2) {
+      setIsRemoteAutocompleteLoading(false);
+      const nearbyPool = allPois
+        .filter(p => matchesSearchCategory(p, searchCategoryFilter))
+        .map(p => ({
+          poi: enrichPoiWithOsmAndMeta(p),
+          dist: getDistance(refOrigin.lat, refOrigin.lng, p.coordinates.lat, p.coordinates.lng),
+          isFav: favorites.has(p.id) ? 1 : 0,
+        }))
+        .sort((a, b) => {
+          if (searchSortMode === 'distance' || searchCategoryFilter === 'nearby') return a.dist - b.dist;
+          if (a.isFav !== b.isFav) return b.isFav - a.isFav;
+          return a.dist - b.dist;
+        })
+        .slice(0, 15)
+        .map(x => x.poi);
+
+      setSearchSuggestions(nearbyPool);
+      return;
+    }
+
+    // 1. Riconoscimento istantaneo di Coordinate GPS (anche offline!)
+    const coordMatch = rawTrimmed.match(
+      /^([+-]?\d{1,2}(?:\.\d+)?)\s*[,;\s]\s*([+-]?\d{1,3}(?:\.\d+)?)$/
+    );
+    let syntheticCoordPoi: POI | null = null;
+    if (coordMatch) {
+      const cLat = parseFloat(coordMatch[1]);
+      const cLng = parseFloat(coordMatch[2]);
+      if (cLat >= -90 && cLat <= 90 && cLng >= -180 && cLng <= 180) {
+        const loc = resolvePoiLocality({}, {}, cLat, cLng);
+        syntheticCoordPoi = {
+          id: `coord-${cLat.toFixed(5)}-${cLng.toFixed(5)}`,
+          name: `Coordinate ${cLat.toFixed(5)}°N, ${cLng.toFixed(5)}°E`,
+          type: POIType.VIEWPOINT,
+          altitude: 0,
+          coordinates: { lat: cLat, lng: cLng },
+          exposure: Exposure.VARIOUS,
+          signal: SignalStrength.NONE,
+          hasWater: false,
+          hasRoof: false,
+          hasElectricity: false,
+          hasFireplace: false,
+          description: `Punto geografico diretto (${cLat.toFixed(5)}, ${cLng.toFixed(5)})`,
+          imageUrl: '',
+          categoryLabel: 'Coordinate GPS',
+          locality: loc || undefined,
+          osmSubkind: 'place',
+        };
       }
+    }
 
-      // Ricerca istantanea nel DB locale (funziona 100% offline su Bivacchi, Rifugi, Malghe, Cime salvati)
-      const q = searchQuery.trim().toLowerCase();
-      const localMatches = allPois
-          .filter(p => p.name.toLowerCase().includes(q) || (p.description && p.description.toLowerCase().includes(q)))
-          .sort((a, b) => {
-              const aStarts = a.name.toLowerCase().startsWith(q) ? 0 : 1;
-              const bStarts = b.name.toLowerCase().startsWith(q) ? 0 : 1;
-              return aStarts - bStarts;
-          })
-          .slice(0, 8);
+    // 2. Ricerca locale multi-token e insensibile agli accenti su tutti i POI in memoria
+    const normQuery = normalizeSearchText(rawTrimmed);
+    const tokens = normQuery.split(/\s+/).filter(Boolean);
 
-      if (isOffline) {
-          setSearchSuggestions(localMatches);
-          setShowSuggestions(localMatches.length > 0);
-          return;
+    const scoredLocal = allPois
+      .filter(p => matchesSearchCategory(p, searchCategoryFilter))
+      .map(rawPoi => {
+        const p = enrichPoiWithOsmAndMeta(rawPoi);
+        const normName = normalizeSearchText(p.name);
+        const normType = normalizeSearchText(p.categoryLabel || p.type);
+        const normLoc = normalizeSearchText(p.locality || '');
+        const normDesc = normalizeSearchText(p.description || '');
+        const normOp = normalizeSearchText(p.operator || '');
+        const normNote = normalizeSearchText(p.userNote || '');
+        const altStr = p.altitude ? `${p.altitude}m ${p.altitude}` : '';
+        const extraKeywords = [
+          p.hasWater ? 'acqua fontana sorgente ruscello' : '',
+          p.hasFireplace ? 'stufa camino riscaldamento' : '',
+          p.hasRoof ? 'tetto coperto ricovero malga' : '',
+        ].join(' ');
+
+        const haystack = `${normName} ${normType} ${normLoc} ${normDesc} ${normOp} ${normNote} ${altStr} ${extraKeywords}`;
+        const allTokensMatch = tokens.every(tk => haystack.includes(tk));
+        if (!allTokensMatch) return null;
+
+        let score = 0;
+        if (normName === normQuery) score += 120;
+        else if (normName.startsWith(normQuery)) score += 85;
+        else if (normName.includes(normQuery)) score += 55;
+
+        tokens.forEach(tk => {
+          if (normName.startsWith(tk) || normName.includes(` ${tk}`)) score += 25;
+        });
+
+        if (favorites.has(p.id)) score += 20;
+        if (p.userNote) score += 15;
+
+        const distKm = getDistance(
+          refOrigin.lat,
+          refOrigin.lng,
+          p.coordinates.lat,
+          p.coordinates.lng
+        );
+        score += Math.max(0, 18 - distKm * 0.25);
+
+        return { poi: p, score, distKm };
+      })
+      .filter((item): item is { poi: POI; score: number; distKm: number } => item !== null)
+      .sort((a, b) => {
+        if (searchSortMode === 'distance' || searchCategoryFilter === 'nearby') return a.distKm - b.distKm;
+        return b.score - a.score;
+      })
+      .slice(0, 14)
+      .map(item => item.poi);
+
+    const initialList = syntheticCoordPoi ? [syntheticCoordPoi, ...scoredLocal] : scoredLocal;
+
+    if (isOffline) {
+      setIsRemoteAutocompleteLoading(false);
+      setSearchSuggestions(initialList);
+      return;
+    }
+
+    setSearchSuggestions(initialList);
+
+    setIsRemoteAutocompleteLoading(true);
+    searchTimeoutRef.current = setTimeout(async () => {
+      try {
+        const remoteResults = await searchOsmPoisByName(rawTrimmed, true, refOrigin);
+        const filteredRemote = remoteResults.filter(p =>
+          matchesSearchCategory(p, searchCategoryFilter)
+        );
+        const mergedList: POI[] = [...initialList];
+        filteredRemote.forEach(p => {
+          const isDuplicateOfLocal = mergedList.some(
+            ex =>
+              normalizeSearchText(ex.name) === normalizeSearchText(p.name) &&
+              (ex.osmSubkind || 'place') === (p.osmSubkind || 'place') &&
+              getDistance(ex.coordinates.lat, ex.coordinates.lng, p.coordinates.lat, p.coordinates.lng) < 0.35
+          );
+          if (!isDuplicateOfLocal) {
+            mergedList.push(p);
+          }
+        });
+        setSearchSuggestions(mergedList.slice(0, 22));
+      } finally {
+        setIsRemoteAutocompleteLoading(false);
       }
-
-      // Mostra subito i match locali e poi arricchisce con Nominatim/OSM se >= 3 caratteri
-      if (localMatches.length > 0) {
-          setSearchSuggestions(localMatches);
-          setShowSuggestions(true);
-      }
-
-      if (searchQuery.trim().length < 3) return;
-
-      searchTimeoutRef.current = setTimeout(async () => {
-          const remoteResults = await searchOsmPoisByName(searchQuery, true);
-          const mergedMap = new Map<string, POI>();
-          localMatches.forEach(p => mergedMap.set(p.id, p));
-          remoteResults.forEach(p => {
-              if (!mergedMap.has(p.id)) mergedMap.set(p.id, p);
-          });
-          const combined = Array.from(mergedMap.values()).slice(0, 10);
-          setSearchSuggestions(combined);
-          setShowSuggestions(combined.length > 0);
-      }, 300); 
-  }, [searchQuery, isOffline, allPois]);
+    }, 240);
+  }, [searchQuery, searchCategoryFilter, searchSortMode, isOffline, allPois, favorites, userLocation, normalizeSearchText, matchesSearchCategory, enrichPoiWithOsmAndMeta]);
 
   const ensureMarkerVisible = (poi: POI, map: L.Map, isRemote: boolean = false) => {
       const targetLatLng = L.latLng(poi.coordinates.lat, poi.coordinates.lng);
@@ -1559,34 +2092,41 @@ ${wptsXml}
       }
   };
 
-  const handleSuggestionClick = async (poi: POI) => {
+  const handleSuggestionClick = async (poi: POI, openFullSheet: boolean = false) => {
       setShowSuggestions(false);
+      setActiveSuggestionIndex(-1);
       setSearchQuery(poi.name); 
+      savePoiToRecentSearches(poi);
       
       setAllPois(prev => {
           const existingIds = new Set(prev.map(p => p.id));
           if (!existingIds.has(poi.id)) {
-              return [...prev, poi];
+              const updated = [...prev, poi];
+              saveToDb(updated);
+              return updated;
           }
           return prev;
       });
+
+      // Se l'utente è in modalità Lista e il filtro tipo corrente escluderebbe il POI cercato, abilita automaticamente il suo tipo
+      if (viewMode === 'list' && !selectedTypes.includes(poi.type)) {
+          setSelectedTypes(prev => [...prev, poi.type]);
+      }
       
       clearInspectedLocation();
       setSelectedPoi(poi);
-      setIsDetailPanelOpen(false); 
+      setIsDetailPanelOpen(openFullSheet); 
       
-      if (viewMode === 'list') {
+      if (viewMode === 'list' && !openFullSheet) {
           setHighlightedPoiId(poi.id);
           setTimeout(() => {
               const element = document.getElementById(`poi-card-${poi.id}`);
               if (element) {
                   element.scrollIntoView({ behavior: 'smooth', block: 'center' });
               }
-          }, 100);
-      } else {
-          if (mapRef.current) {
-              ensureMarkerVisible(poi, mapRef.current, true);
-          }
+          }, 120);
+      } else if (mapRef.current) {
+          ensureMarkerVisible(poi, mapRef.current, true);
       }
 
       if (poi.altitude === 0) {
@@ -1596,6 +2136,7 @@ ${wptsXml}
                  const fullPoi = enriched[0];
                  setAllPois(prev => prev.map(p => p.id === fullPoi.id ? fullPoi : p));
                  setSelectedPoi(prev => prev && prev.id === fullPoi.id ? fullPoi : prev);
+                 savePoiToRecentSearches(fullPoi);
                  dbService.savePois([fullPoi]);
              }
           } catch(e) { console.error("Enrichment failed", e); }
@@ -1613,7 +2154,7 @@ ${wptsXml}
 
      if (tracks.length > 0) {
         tracks.forEach(track => {
-            if (!gpxLayerGroupRef.current) return;
+            if (!gpxLayerGroupRef.current || track.hidden) return;
             const polyline = L.polyline(track.latlngs, { color: track.color, weight: 4, opacity: 0.9, lineJoin: 'round', lineCap: 'round' });
             polyline.on('click', (e) => { 
                 L.DomEvent.stopPropagation(e); 
@@ -1865,11 +2406,7 @@ ${wptsXml}
       color: TRACK_COLORS[tracks.length % TRACK_COLORS.length],
     };
 
-    setTracks(prev => {
-      // Se ci sono già 2 tracce, sostituisce l'ultima per non bloccare l'utente
-      const base = prev.length >= 2 ? [prev[0]] : prev;
-      return [...base, newTrack];
-    });
+    setTracks(prev => [...prev, newTrack]);
     setFocusedTrackId(newTrack.id);
     setFilterByTrack(true);
     setIsTrackPanelOpen(true);
@@ -1945,105 +2482,216 @@ ${trkptsXml}
     showToast("File .GPX del Tour scaricato con successo!");
   }, [computedTourRoute, tourWaypoints, tourLoopBack]);
 
-  const downloadMapArea = async () => {
-    if (!mapRef.current || isOffline) return;
-    setIsDownloading(true);
-    setDownloadProgress('fetching');
-    setDownloadCount(0);
-    const b = mapRef.current.getBounds();
-    const boundsObj = { south: b.getSouth(), west: b.getWest(), north: b.getNorth(), east: b.getEast() };
-    try {
-      // 1. Scarica tutti i POI dell'area visibile + arricchimento DEM
-      const newPois = await fetchOsmPois(boundsObj, 'All');
-      setDownloadCount(newPois.length);
-      setDownloadProgress('saving');
-      await dbService.savePois(newPois);
-      seedElevationCacheFromPois(newPois);
-      setAllPois(prev => {
-        const ids = new Set(prev.map(p => p.id));
-        return [...prev, ...newPois.filter(p => !ids.has(p.id))];
-      });
-
-      // 2. Scarica e salva in IndexedDB il grafo sentieri CAI/OSM e vette per Routing (1.3) e Analisi GPX (1.2) Offline
-      preloadOfflineAreaTrailNetwork(boundsObj).catch(() => {});
-
-      // 3. Pre-caching dei tasselli mappa (Tile) per l'area visibile nel Service Worker
-      try {
-        const currentZoom = Math.round(mapRef.current.getZoom());
-        const targetZooms = Array.from(new Set([Math.max(10, currentZoom), Math.min(16, currentZoom + 1)]));
-        const lat2tile = (lat: number, z: number) => Math.floor((1 - Math.log(Math.tan(lat * Math.PI / 180) + 1 / Math.cos(lat * Math.PI / 180)) / Math.PI) / 2 * Math.pow(2, z));
-        const lon2tile = (lon: number, z: number) => Math.floor((lon + 180) / 360 * Math.pow(2, z));
-        const tileUrls: string[] = [];
-
-        for (const z of targetZooms) {
-          const xMin = lon2tile(boundsObj.west, z);
-          const xMax = lon2tile(boundsObj.east, z);
-          const yMin = lat2tile(boundsObj.north, z);
-          const yMax = lat2tile(boundsObj.south, z);
-          for (let x = xMin; x <= xMax; x++) {
-            for (let y = yMin; y <= yMax; y++) {
-              if (tileUrls.length >= 90) break; // Limite di sicurezza per non saturare la banda
-              if (mapStyle === 'standard') {
-                tileUrls.push(`https://a.tile.openstreetmap.org/${z}/${x}/${y}.png`);
-              } else {
-                tileUrls.push(`https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/${z}/${y}/${x}`);
-                if (mapStyle === 'hybrid') {
-                  tileUrls.push(`https://tile.waymarkedtrails.org/hiking/${z}/${x}/${y}.png`);
-                }
-              }
-            }
-          }
-        }
-        // Esegue i fetch in background così il Service Worker li intercetta e li salva in TILE_CACHE_NAME
-        Promise.allSettled(tileUrls.map(u => fetch(u, { mode: 'no-cors' }))).catch(() => {});
-      } catch (tileErr) {
-        console.warn("Tile pre-cache warning:", tileErr);
+  // --- [MODULAR FEATURE 5] GESTORI DOWNLOAD PACCHETTI MAPPE OFFLINE & RIQUADRO PERSONALIZZATO ---
+  // Si aggancia a fetchOsmPois, dbService, seedElevationCacheFromPois e preloadOfflineAreaTrailNetwork
+  // mantenendo intatta anche la funzione rapida downloadMapArea pre-esistente.
+  const startOfflinePackageDownload = useCallback(
+    async (params: {
+      id: string;
+      baseRegionId?: string;
+      name: string;
+      subtitle: string;
+      regionGroup: string;
+      bounds: { south: number; west: number; north: number; east: number };
+      style?: OfflineMapStyle;
+      isCustomArea?: boolean;
+    }) => {
+      if (isOffline) {
+        showToast("Connettiti a Internet per scaricare nuove mappe offline.");
+        return;
+      }
+      if (activeDownloadProgress && activeDownloadProgress.phase !== 'done' && activeDownloadProgress.phase !== 'error') {
+        showToast("Un download offline è già in corso.");
+        return;
       }
 
-      // 4. Salva anche l'analisi meteo del centro area per consultazione offline
-      const center = mapRef.current.getCenter();
-      analyzeLocationPhysics(center.lat, center.lng).catch(() => {});
+      if (offlineDownloadAbortRef.current) {
+        offlineDownloadAbortRef.current.abort();
+      }
+      const controller = new AbortController();
+      offlineDownloadAbortRef.current = controller;
 
-      setDownloadProgress('done');
-      setTimeout(() => {
+      setIsDownloading(true);
+      setDownloadProgress('fetching');
+
+      const targetStyle = params.style || offlineDownloadStyle || mapStyle;
+
+      try {
+        const { pkg, pois } = await downloadCompleteOfflinePackage({
+          id: params.id,
+          baseRegionId: params.baseRegionId || params.id,
+          name: params.name,
+          subtitle: params.subtitle,
+          regionGroup: params.regionGroup,
+          bounds: params.bounds,
+          mapStyle: targetStyle,
+          isCustomArea: params.isCustomArea,
+          signal: controller.signal,
+          onProgress: (prog) => {
+            setActiveDownloadProgress(prog);
+            if (prog.phase === 'pois' || prog.phase === 'trails_dem') {
+              setDownloadProgress('saving');
+              setDownloadCount(prog.poisSaved || 0);
+            }
+          },
+        });
+
+        if (pois.length > 0) {
+          setAllPois(prev => {
+            const existingIds = new Set(prev.map(p => p.id));
+            const added = pois.filter(p => !existingIds.has(p.id));
+            return added.length > 0 ? [...prev, ...added] : prev;
+          });
+        }
+
+        const updatedList = await getSavedOfflinePackages();
+        setSavedOfflinePackages(updatedList);
+        setDownloadProgress('done');
+        setCustomAreaSelecting(false);
+        const stMeta = getOfflineMapStyleMeta(pkg.mapStyle);
+        showToast(`Mappa ${stMeta.shortLabel} "${pkg.name}" salvata (${pkg.tileCount} tile, ${pkg.poiCount} POI)`);
+
+        setTimeout(() => {
+          setIsDownloading(false);
+          setDownloadProgress('idle');
+          setActiveDownloadProgress(null);
+        }, 1200);
+      } catch (err: any) {
+        if (err?.name === 'AbortError') {
+          showToast("Download mappa offline annullato.");
+        } else {
+          console.error("Offline package download error:", err);
+          showToast("Errore durante il download del pacchetto offline.");
+        }
         setIsDownloading(false);
         setDownloadProgress('idle');
-        setIsLayersMenuOpen(false);
-        showToast(`Area Offline pronta: ${newPois.length} POI, Sentieri e Mappa salvati`);
-      }, 1800);
-    } catch (e) {
-      console.error("Download failed", e);
-      setIsDownloading(false);
-      setDownloadProgress('idle');
-      showToast("Errore durante il download dell'area.");
+        setActiveDownloadProgress(null);
+      } finally {
+        if (offlineDownloadAbortRef.current === controller) {
+          offlineDownloadAbortRef.current = null;
+        }
+      }
+    },
+    [isOffline, activeDownloadProgress, offlineDownloadStyle, mapStyle]
+  );
+
+  const cancelOfflinePackageDownload = useCallback(() => {
+    if (offlineDownloadAbortRef.current) {
+      offlineDownloadAbortRef.current.abort();
+      offlineDownloadAbortRef.current = null;
     }
+    setIsDownloading(false);
+    setDownloadProgress('idle');
+    setActiveDownloadProgress(null);
+  }, []);
+
+  const handleDeleteOfflinePackage = useCallback(async (pkg: OfflineMapPackage) => {
+    const remaining = await deleteOfflinePackage(pkg.id);
+    setSavedOfflinePackages(remaining);
+    const stMeta = getOfflineMapStyleMeta(pkg.mapStyle);
+    showToast(`Mappa ${stMeta.shortLabel} "${pkg.name}" rimossa.`);
+  }, []);
+
+  const focusOfflinePackageOnMap = useCallback(
+    (pkg: OfflineMapPackage) => {
+      setIsOfflineManagerOpen(false);
+      setCustomAreaSelecting(false);
+      if (viewMode !== 'map') {
+        setViewMode('map');
+      }
+      if (pkg.mapStyle && pkg.mapStyle !== mapStyle) {
+        setMapStyle(pkg.mapStyle);
+      }
+      const stMeta = getOfflineMapStyleMeta(pkg.mapStyle);
+      setTimeout(() => {
+        if (!mapRef.current) return;
+        const b = L.latLngBounds(
+          [pkg.bounds.south, pkg.bounds.west],
+          [pkg.bounds.north, pkg.bounds.east]
+        );
+        mapRef.current.fitBounds(b, { padding: [40, 40], maxZoom: 14 });
+        showToast(`Attivata ${stMeta.shortLabel}: ${pkg.name}`);
+      }, 80);
+    },
+    [viewMode, mapStyle]
+  );
+
+  // Renderizza i perimetri tratteggiati delle aree scaricate offline sulla mappa
+  const updateOfflineBoundsLayer = useCallback(() => {
+    if (!mapRef.current || !isMapReady) return;
+    if (!offlineBoundsLayerGroupRef.current) {
+      offlineBoundsLayerGroupRef.current = L.layerGroup().addTo(mapRef.current);
+    }
+    offlineBoundsLayerGroupRef.current.clearLayers();
+
+    if (!showOfflineBoundsOnMap || savedOfflinePackages.length === 0) return;
+
+    savedOfflinePackages.forEach(pkg => {
+      if (!offlineBoundsLayerGroupRef.current) return;
+      const rectBounds: L.LatLngBoundsExpression = [
+        [pkg.bounds.south, pkg.bounds.west],
+        [pkg.bounds.north, pkg.bounds.east],
+      ];
+      L.rectangle(rectBounds, {
+        color: '#10b981',
+        weight: 1.75,
+        opacity: 0.75,
+        fillColor: '#10b981',
+        fillOpacity: 0.04,
+        dashArray: '6, 6',
+        interactive: false,
+      }).addTo(offlineBoundsLayerGroupRef.current);
+    });
+  }, [savedOfflinePackages, showOfflineBoundsOnMap, isMapReady]);
+
+  useEffect(() => {
+    updateOfflineBoundsLayer();
+  }, [updateOfflineBoundsLayer, viewMode]);
+
+  const downloadMapArea = async () => {
+    if (!mapRef.current || isOffline) return;
+    const b = mapRef.current.getBounds();
+    const center = mapRef.current.getCenter();
+    const boundsObj = {
+      south: Number(b.getSouth().toFixed(4)),
+      west: Number(b.getWest().toFixed(4)),
+      north: Number(b.getNorth().toFixed(4)),
+      east: Number(b.getEast().toFixed(4)),
+    };
+    await startOfflinePackageDownload({
+      id: `custom-view-${Date.now()}`,
+      name: customAreaNameDraft.trim() || `Area Mappa (${center.lat.toFixed(2)}°N, ${center.lng.toFixed(2)}°E)`,
+      subtitle: `Quadrante personalizzato Z9–Z16 + Sentieri & POI`,
+      regionGroup: 'Area Personalizzata',
+      bounds: boundsObj,
+      style: mapStyle,
+      isCustomArea: true,
+    });
+    setCustomAreaNameDraft('');
   };
   
-  // --- [LOCKED FEATURE] GLOBAL SEARCH ---
+  // --- [LOCKED FEATURE] GLOBAL SEARCH (POTENZIATA CON SUGGERIMENTI, COORDINATE E BIAS GEOGRAFICO) ---
   // DO NOT MODIFY SEARCH LOGIC WITHOUT PERMISSION
   const handleGlobalSearch = async (e: React.FormEvent) => { 
       e.preventDefault(); 
-      const query = searchQuery.trim().toLowerCase(); 
+      const query = searchQuery.trim(); 
       if (!query) return; 
+
+      // Se l'utente ha selezionato con le frecce o se abbiamo già un match esatto in cima ai suggerimenti, aprilo subito
+      if (activeSuggestionIndex >= 0 && activeSuggestionIndex < searchSuggestions.length) {
+          handleSuggestionClick(searchSuggestions[activeSuggestionIndex]);
+          return;
+      }
+      if (searchSuggestions.length > 0 && normalizeSearchText(searchSuggestions[0].name) === normalizeSearchText(query)) {
+          handleSuggestionClick(searchSuggestions[0]);
+          return;
+      }
+
       setShowSuggestions(false);
       
       if (isOffline) { 
-          const localResults = allPois.filter(p => p.name.toLowerCase().includes(query) || (p.description && p.description.toLowerCase().includes(query))); 
-          if (localResults.length > 0) { 
-              const target = localResults[0];
-              clearInspectedLocation();
-              setSelectedPoi(target); 
-              setIsDetailPanelOpen(false); 
-              
-              if (viewMode === 'list') {
-                  setHighlightedPoiId(target.id);
-                  setTimeout(() => {
-                      const element = document.getElementById(`poi-card-${target.id}`);
-                      if (element) element.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                  }, 100);
-              } else if (mapRef.current) {
-                  ensureMarkerVisible(target, mapRef.current, true); 
-              }
+          if (searchSuggestions.length > 0) { 
+              handleSuggestionClick(searchSuggestions[0]);
           } else { 
               showToast("Nessun risultato offline trovato."); 
           } 
@@ -2051,17 +2699,22 @@ ${trkptsXml}
       } 
       
       setIsGlobalSearching(true); 
-      const results = await searchOsmPoisByName(searchQuery); 
+      const refOrigin = userLocation || mapViewState.current.center;
+      const results = await searchOsmPoisByName(searchQuery, false, refOrigin); 
       setIsGlobalSearching(false); 
       
       if (results.length > 0) { 
           const target = results[0]; 
+          savePoiToRecentSearches(target);
           setAllPois(prev => { 
               const existingIds = new Set(prev.map(p => p.id)); 
               const combined = [...prev, ...results.filter(p => !existingIds.has(p.id))]; 
               saveToDb(combined); 
               return combined; 
           }); 
+          if (viewMode === 'list' && !selectedTypes.includes(target.type)) {
+              setSelectedTypes(prev => [...prev, target.type]);
+          }
           clearInspectedLocation();
           setSelectedPoi(target); 
           setIsDetailPanelOpen(false); 
@@ -2071,19 +2724,24 @@ ${trkptsXml}
               setTimeout(() => {
                   const element = document.getElementById(`poi-card-${target.id}`);
                   if (element) element.scrollIntoView({ behavior: 'smooth', block: 'center' });
-              }, 100);
+              }, 120);
           } else if (mapRef.current) {
               ensureMarkerVisible(target, mapRef.current, true); 
           }
+      } else if (searchSuggestions.length > 0) {
+          handleSuggestionClick(searchSuggestions[0]);
       } else { 
           showToast("Nessun risultato trovato."); 
       } 
   };
   
-  // --- [LOCKED FEATURE] GPX PARSER ---
+  // --- [LOCKED FEATURE] GPX PARSER (CON SUPPORTO MULTI-TRACCIA ILLIMITATO E CALIBRAZIONE PASSO UTENTE) ---
   // DO NOT MODIFY WITHOUT PERMISSION
-  const handleGpxUpload = (event: React.ChangeEvent<HTMLInputElement>) => { const file = event.target.files?.[0]; if (!file) return; if (tracks.length >= 2) { showToast("Massimo 2 tracce contemporaneamente."); event.target.value = ''; return; } const reader = new FileReader(); reader.onload = (e) => { try { const text = e.target?.result as string; const parser = new DOMParser(); const xmlDoc = parser.parseFromString(text, "text/xml"); const trkpts = xmlDoc.getElementsByTagName("trkpt"); if (trkpts.length === 0) { showToast("Nessuna traccia valida trovata."); return; } const points: TrackPoint[] = []; const latlngs: [number, number][] = []; let totalDist = 0, gain = 0, loss = 0, minEle = Infinity, maxEle = -Infinity, minEleIdx = 0, maxEleIdx = 0; let maxGrade = 0; let gradeAccumulator = 0; let totalTime = 0; let hasTime = false; let sumHr = 0, maxHr = 0, hrCount = 0; let sumTemp = 0, tempCount = 0; let ascentTimeSeconds = 0; for (let i = 0; i < trkpts.length; i++) { const lat = parseFloat(trkpts[i].getAttribute("lat") || "0"); const lng = parseFloat(trkpts[i].getAttribute("lon") || "0"); const eleNode = trkpts[i].getElementsByTagName("ele")[0]; const ele = eleNode ? parseFloat((eleNode.textContent || "0").replace(',', '.')) : 0; const timeNode = trkpts[i].getElementsByTagName("time")[0]; let timeTs = undefined; if (timeNode) { hasTime = true; timeTs = new Date(timeNode.textContent || "").getTime(); } let hr = undefined, temp = undefined, cadence = undefined; const extensions = trkpts[i].getElementsByTagName("extensions")[0]; if (extensions) { const hrNode = extensions.querySelector("hr, heartrate, *[nodeName='gpxtpx:hr'], *[nodeName='gpxtpx:heartrate']"); if (hrNode && hrNode.textContent) { hr = parseFloat(hrNode.textContent); sumHr += hr; if (hr > maxHr) maxHr = hr; hrCount++; } const tempNode = extensions.querySelector("atemp, temp, temperature, *[nodeName='gpxtpx:atemp'], *[nodeName='gpxtpx:temp']"); if (tempNode && tempNode.textContent) { temp = parseFloat(tempNode.textContent); sumTemp += temp; tempCount++; } const cadNode = extensions.querySelector("cad, cadence, *[nodeName='gpxtpx:cad'], *[nodeName='gpxtpx:cadence']"); if (cadNode && cadNode.textContent) { cadence = parseFloat(cadNode.textContent); } } latlngs.push([lat, lng]); let distStep = 0; if (i > 0) { const prev = points[i-1]; distStep = getDistance(prev.lat, prev.lng, lat, lng); totalDist += distStep; const eleDiff = ele - prev.ele; if (eleDiff > 0) { gain += eleDiff; if (hasTime && timeTs && prev.time) { const dt = (timeTs - prev.time) / 1000; if (dt > 0 && dt < 120) { ascentTimeSeconds += dt; } } } else { loss += Math.abs(eleDiff); } if (distStep > 0.01) { const grade = Math.abs((eleDiff / (distStep * 1000)) * 100); if (grade < 100) { if (grade > maxGrade) maxGrade = grade; gradeAccumulator += grade; } } if (hasTime && timeTs && prev.time) { totalTime += (timeTs - prev.time) / 1000; } } if (ele < minEle) { minEle = ele; minEleIdx = i; } if (ele > maxEle) { maxEle = ele; maxEleIdx = i; } points.push({ lat, lng, ele, dist: totalDist, time: timeTs, hr, temp, cadence }); } const wpts = xmlDoc.getElementsByTagName("wpt"); for (let w = 0; w < wpts.length; w++) { const wLat = parseFloat(wpts[w].getAttribute("lat") || "0"); const wLng = parseFloat(wpts[w].getAttribute("lon") || "0"); const wEleNode = wpts[w].getElementsByTagName("ele")[0]; const wEle = wEleNode ? parseFloat((wEleNode.textContent || "0").replace(',', '.')) : 0; if (wEle > maxEle && points.length > 0) { let cIdx = -1; let cDist = 0.15; for (let pIdx = 0; pIdx < points.length; pIdx++) { const d = getDistance(wLat, wLng, points[pIdx].lat, points[pIdx].lng); if (d < cDist) { cDist = d; cIdx = pIdx; } } if (cIdx !== -1) { points[cIdx].ele = wEle; maxEle = wEle; maxEleIdx = cIdx; } } } const step = Math.ceil(points.length / 400); const simplifiedPoints = points.filter((_, i) => i === 0 || i === points.length - 1 || i === maxEleIdx || i === minEleIdx || i % step === 0); let estimatedTime = 0; let isEstimated = false; if (!hasTime || totalTime === 0) { isEstimated = true; estimatedTime = (totalDist / 4) * 3600 + (gain / 600) * 3600; totalTime = estimatedTime; ascentTimeSeconds = (gain / 600) * 3600; } const avgSpeed = totalTime > 0 ? (totalDist / (totalTime / 3600)) : 0; const avgGrade = points.length > 1 ? gradeAccumulator / points.length : 0; let vam = 0; if (ascentTimeSeconds > 600 && gain > 50) { vam = (gain / (ascentTimeSeconds / 3600)); } const newTrack: LoadedTrack = { id: crypto.randomUUID(), name: file.name.replace(/\.gpx$/i, ''), latlngs: latlngs, points: simplifiedPoints, stats: { totalDistance: totalDist, elevationGain: gain, elevationLoss: loss, minElevation: minEle === Infinity ? 0 : minEle, maxElevation: maxEle === -Infinity ? 0 : maxEle, totalTimeSeconds: totalTime, avgSpeedKmh: avgSpeed, maxGrade: maxGrade, avgGrade: avgGrade, isEstimatedTime: isEstimated, vam: vam > 0 ? Math.round(vam) : undefined, avgHr: hrCount > 0 ? Math.round(sumHr / hrCount) : undefined, maxHr: maxHr > 0 ? Math.round(maxHr) : undefined, avgTemp: tempCount > 0 ? Math.round(sumTemp / tempCount) : undefined }, color: TRACK_COLORS[tracks.length] }; setTracks(prev => [...prev, newTrack]); setFocusedTrackId(newTrack.id); setFilterByTrack(true); setIsTrackPanelOpen(true); setIsTrackPanelExpanded(false); setIsTrailsMenuOpen(false); setIsSidebarOpen(false); setIsDetailPanelOpen(false); centerOnTrack(newTrack, true); } catch (err) { console.error("GPX Parse Error", err); showToast("Errore nel caricamento del file GPX."); } }; reader.readAsText(file); event.target.value = ''; };
-  const removeTrack = (id: string) => { setTracks(prev => { const newTracks = prev.filter(t => t.id !== id); if (newTracks.length === 0) setFilterByTrack(false); return newTracks.map((t, idx) => ({...t, color: TRACK_COLORS[idx]})); }); if (focusedTrackId === id) setFocusedTrackId(null); setHoveredTrackIndex(null); };
+  const handleGpxUpload = (event: React.ChangeEvent<HTMLInputElement>) => { const file = event.target.files?.[0]; if (!file) return; const reader = new FileReader(); reader.onload = (e) => { try { const text = e.target?.result as string; const parser = new DOMParser(); const xmlDoc = parser.parseFromString(text, "text/xml"); const trkpts = xmlDoc.getElementsByTagName("trkpt"); if (trkpts.length === 0) { showToast("Nessuna traccia valida trovata."); return; } const points: TrackPoint[] = []; const latlngs: [number, number][] = []; let totalDist = 0, gain = 0, loss = 0, minEle = Infinity, maxEle = -Infinity, minEleIdx = 0, maxEleIdx = 0; let maxGrade = 0; let gradeAccumulator = 0; let totalTime = 0; let hasTime = false; let sumHr = 0, maxHr = 0, hrCount = 0; let sumTemp = 0, tempCount = 0; let ascentTimeSeconds = 0; for (let i = 0; i < trkpts.length; i++) { const lat = parseFloat(trkpts[i].getAttribute("lat") || "0"); const lng = parseFloat(trkpts[i].getAttribute("lon") || "0"); const eleNode = trkpts[i].getElementsByTagName("ele")[0]; const ele = eleNode ? parseFloat((eleNode.textContent || "0").replace(',', '.')) : 0; const timeNode = trkpts[i].getElementsByTagName("time")[0]; let timeTs = undefined; if (timeNode) { hasTime = true; timeTs = new Date(timeNode.textContent || "").getTime(); } let hr = undefined, temp = undefined, cadence = undefined; const extensions = trkpts[i].getElementsByTagName("extensions")[0]; if (extensions) { const hrNode = extensions.querySelector("hr, heartrate, *[nodeName='gpxtpx:hr'], *[nodeName='gpxtpx:heartrate']"); if (hrNode && hrNode.textContent) { hr = parseFloat(hrNode.textContent); sumHr += hr; if (hr > maxHr) maxHr = hr; hrCount++; } const tempNode = extensions.querySelector("atemp, temp, temperature, *[nodeName='gpxtpx:atemp'], *[nodeName='gpxtpx:temp']"); if (tempNode && tempNode.textContent) { temp = parseFloat(tempNode.textContent); sumTemp += temp; tempCount++; } const cadNode = extensions.querySelector("cad, cadence, *[nodeName='gpxtpx:cad'], *[nodeName='gpxtpx:cadence']"); if (cadNode && cadNode.textContent) { cadence = parseFloat(cadNode.textContent); } } latlngs.push([lat, lng]); let distStep = 0; if (i > 0) { const prev = points[i-1]; distStep = getDistance(prev.lat, prev.lng, lat, lng); totalDist += distStep; const eleDiff = ele - prev.ele; if (eleDiff > 0) { gain += eleDiff; if (hasTime && timeTs && prev.time) { const dt = (timeTs - prev.time) / 1000; if (dt > 0 && dt < 120) { ascentTimeSeconds += dt; } } } else { loss += Math.abs(eleDiff); } if (distStep > 0.01) { const grade = Math.abs((eleDiff / (distStep * 1000)) * 100); if (grade < 100) { if (grade > maxGrade) maxGrade = grade; gradeAccumulator += grade; } } if (hasTime && timeTs && prev.time) { totalTime += (timeTs - prev.time) / 1000; } } if (ele < minEle) { minEle = ele; minEleIdx = i; } if (ele > maxEle) { maxEle = ele; maxEleIdx = i; } points.push({ lat, lng, ele, dist: totalDist, time: timeTs, hr, temp, cadence }); } const wpts = xmlDoc.getElementsByTagName("wpt"); for (let w = 0; w < wpts.length; w++) { const wLat = parseFloat(wpts[w].getAttribute("lat") || "0"); const wLng = parseFloat(wpts[w].getAttribute("lon") || "0"); const wEleNode = wpts[w].getElementsByTagName("ele")[0]; const wEle = wEleNode ? parseFloat((wEleNode.textContent || "0").replace(',', '.')) : 0; if (wEle > maxEle && points.length > 0) { let cIdx = -1; let cDist = 0.15; for (let pIdx = 0; pIdx < points.length; pIdx++) { const d = getDistance(wLat, wLng, points[pIdx].lat, points[pIdx].lng); if (d < cDist) { cDist = d; cIdx = pIdx; } } if (cIdx !== -1) { points[cIdx].ele = wEle; maxEle = wEle; maxEleIdx = cIdx; } } } const step = Math.ceil(points.length / 400); const simplifiedPoints = points.filter((_, i) => i === 0 || i === points.length - 1 || i === maxEleIdx || i === minEleIdx || i % step === 0); let estimatedTime = 0; let isEstimated = false; const hSpd = Math.max(1.5, userSettingsRef.current.horizSpeedKmh || 4.0); const upSpd = Math.max(150, userSettingsRef.current.ascentSpeedMh || 350.0); if (!hasTime || totalTime === 0) { isEstimated = true; estimatedTime = (totalDist / hSpd) * 3600 + (gain / upSpd) * 3600; totalTime = estimatedTime; ascentTimeSeconds = (gain / upSpd) * 3600; } const avgSpeed = totalTime > 0 ? (totalDist / (totalTime / 3600)) : 0; const avgGrade = points.length > 1 ? gradeAccumulator / points.length : 0; let vam = 0; if (ascentTimeSeconds > 600 && gain > 50) { vam = (gain / (ascentTimeSeconds / 3600)); } const newTrack: LoadedTrack = { id: crypto.randomUUID(), name: file.name.replace(/\.gpx$/i, ''), latlngs: latlngs, points: simplifiedPoints, stats: { totalDistance: totalDist, elevationGain: gain, elevationLoss: loss, minElevation: minEle === Infinity ? 0 : minEle, maxElevation: maxEle === -Infinity ? 0 : maxEle, totalTimeSeconds: totalTime, avgSpeedKmh: avgSpeed, maxGrade: maxGrade, avgGrade: avgGrade, isEstimatedTime: isEstimated, vam: vam > 0 ? Math.round(vam) : undefined, avgHr: hrCount > 0 ? Math.round(sumHr / hrCount) : undefined, maxHr: maxHr > 0 ? Math.round(maxHr) : undefined, avgTemp: tempCount > 0 ? Math.round(sumTemp / tempCount) : undefined }, color: TRACK_COLORS[tracks.length % TRACK_COLORS.length], hidden: false }; setTracks(prev => [...prev, newTrack]); setFocusedTrackId(newTrack.id); setFilterByTrack(true); setIsTrackPanelOpen(true); setIsTrackPanelExpanded(false); setIsTrailsMenuOpen(false); setIsSidebarOpen(false); setIsDetailPanelOpen(false); centerOnTrack(newTrack, true); } catch (err) { console.error("GPX Parse Error", err); showToast("Errore nel caricamento del file GPX."); } }; reader.readAsText(file); event.target.value = ''; };
+  const removeTrack = (id: string) => { setTracks(prev => { const newTracks = prev.filter(t => t.id !== id); if (newTracks.length === 0) setFilterByTrack(false); return newTracks.map((t, idx) => ({...t, color: TRACK_COLORS[idx % TRACK_COLORS.length]})); }); if (focusedTrackId === id) setFocusedTrackId(null); setHoveredTrackIndex(null); };
+  const toggleTrackVisibility = (id: string) => {
+    setTracks(prev => prev.map(t => (t.id === id ? { ...t, hidden: !t.hidden } : t)));
+  };
   const centerOnTrack = (track: LoadedTrack, withOffset = false) => {
     if (!mapRef.current) return;
     const poly = L.polyline(track.latlngs);
@@ -2103,7 +2761,9 @@ ${trkptsXml}
     return allPois.filter(p => { 
       if (showFavoritesOnly && !favorites.has(p.id)) return false; 
       if (filterByTrack && tracks.length > 0) { 
-        const isNearAny = tracks.some(t => isPointNearPolyline(p.coordinates, t.latlngs, trackBuffer)); 
+        const visibleTracks = tracks.filter(t => !t.hidden);
+        const tracksToCheck = visibleTracks.length > 0 ? visibleTracks : tracks;
+        const isNearAny = tracksToCheck.some(t => isPointNearPolyline(p.coordinates, t.latlngs, trackBuffer)); 
         if (!isNearAny) return false; 
       } 
       // Se nessun tipo è selezionato, nessun punto corrisponde ("come nessuno")
@@ -2550,7 +3210,14 @@ ${trkptsXml}
           };
 
           const onWindowResize = () => {
-            map.invalidateSize({ animate: false });
+            if (!mapRef.current || mapRef.current !== map || !(map as any)._loaded || !(map as any)._mapPane) {
+              return;
+            }
+            try {
+              map.invalidateSize({ animate: false });
+            } catch (err) {
+              // Ignora se il contenitore mappa è in fase di smontaggio
+            }
           };
 
           wrapperEl.addEventListener('touchstart', onTouchStartRot, { passive: true });
@@ -2644,7 +3311,18 @@ ${trkptsXml}
           }); 
           map.on('moveend', () => { 
             const c = map.getCenter(); 
-            mapViewState.current = { center: { lat: c.lat, lng: c.lng }, zoom: map.getZoom() }; 
+            const z = map.getZoom();
+            mapViewState.current = { center: { lat: c.lat, lng: c.lng }, zoom: z }; 
+            if (userSettingsRef.current.autoSaveMapPosition) {
+              saveMapStartupState({ lat: c.lat, lng: c.lng, zoom: z });
+            }
+            const b = map.getBounds();
+            setCurrentViewportBounds({
+              south: Number(b.getSouth().toFixed(4)),
+              west: Number(b.getWest().toFixed(4)),
+              north: Number(b.getNorth().toFixed(4)),
+              east: Number(b.getEast().toFixed(4)),
+            });
             updateMapClustersRef.current();
             if (!isOfflineRef.current) { 
               if (fetchDebounceRef.current) clearTimeout(fetchDebounceRef.current);
@@ -2653,6 +3331,13 @@ ${trkptsXml}
               debounceRef.current = setTimeout(updateCenterWeather, 1000); 
             } 
           }); 
+          const initB = map.getBounds();
+          setCurrentViewportBounds({
+            south: Number(initB.getSouth().toFixed(4)),
+            west: Number(initB.getWest().toFixed(4)),
+            north: Number(initB.getNorth().toFixed(4)),
+            east: Number(initB.getEast().toFixed(4)),
+          });
           setIsMapReady(true); 
           
           if (pendingFocusRef.current) {
@@ -2662,29 +3347,45 @@ ${trkptsXml}
           }
 
           if (!isOfflineRef.current) { executeFetch(); updateCenterWeather(); } 
-      } 
-      return () => { 
-          if (mapRef.current) { 
-              const c = mapRef.current.getCenter(); 
-              mapViewState.current = { center: { lat: c.lat, lng: c.lng }, zoom: mapRef.current.getZoom() }; 
-              setIsMapReady(false); 
+
+          return () => {
+            wrapperEl.removeEventListener('touchstart', onTouchStartRot);
+            wrapperEl.removeEventListener('touchmove', onTouchMoveRot);
+            wrapperEl.removeEventListener('touchend', onTouchEndRot);
+            wrapperEl.removeEventListener('touchcancel', onTouchEndRot);
+            wrapperEl.removeEventListener('mousedown', onMouseDownRot);
+            window.removeEventListener('mousemove', onMouseMoveRot);
+            window.removeEventListener('mouseup', onMouseUpRot);
+            window.removeEventListener('resize', onWindowResize);
+            if (scaleEl && scaleEl.parentNode) {
+              scaleEl.parentNode.removeChild(scaleEl);
+            }
+            if (mapRef.current) {
+              try {
+                const c = mapRef.current.getCenter();
+                mapViewState.current = { center: { lat: c.lat, lng: c.lng }, zoom: mapRef.current.getZoom() };
+              } catch {}
+              setIsMapReady(false);
               if (longPressTimerRef.current) {
                 clearTimeout(longPressTimerRef.current);
                 longPressTimerRef.current = null;
               }
               if (inspectedMarkerRef.current) {
-                mapRef.current.removeLayer(inspectedMarkerRef.current);
+                try { mapRef.current.removeLayer(inspectedMarkerRef.current); } catch {}
                 inspectedMarkerRef.current = null;
               }
-              mapRef.current.remove(); 
-              mapRef.current = null; 
-              markersRef.current.clear(); 
-              gpxLayerGroupRef.current = null; 
+              try { mapRef.current.remove(); } catch {}
+              mapRef.current = null;
+              markersRef.current.clear();
+              gpxLayerGroupRef.current = null;
               targetLockLayerGroupRef.current = null;
               tourPlannerLayerGroupRef.current = null;
-              rainLayerRef.current = null; 
-          } 
-      }; 
+              offlineBoundsLayerGroupRef.current = null;
+              rainLayerRef.current = null;
+            }
+          };
+      } 
+      return () => {}; 
   }, [viewMode]);
 
   
@@ -2808,65 +3509,108 @@ ${trkptsXml}
       } 
     }); 
 
+    // In modalità offline o con pacchetti scaricati, maxNativeZoom=16 con maxZoom=19 consente a Leaflet
+    // di effettuare l'Overzooming continuo fino a zoom 19 usando i tasselli Z15/Z16 salvati in cache.
+    const nativeMax = isOffline ? 16 : 18;
     const smoothTileOpts = {
-      keepBuffer: 4,
+      keepBuffer: 6,
       updateWhenZooming: false,
       updateWhenIdle: true,
+      maxNativeZoom: nativeMax,
+    };
+
+    const attachOfflineCacheFallback = (tl: L.TileLayer) => {
+      tl.on('tileerror', async (errEvent: any) => {
+        const img: HTMLImageElement | undefined = errEvent?.tile;
+        const src: string | undefined = img?.src;
+        if (!img || !src || img.dataset.offlineRetried === '1') return;
+        img.dataset.offlineRetried = '1';
+        try {
+          if ('caches' in window) {
+            const cache = await caches.open(TILE_CACHE_NAME);
+            const canonical = src.replace(/https:\/\/[abc]\.tile\.openstreetmap\.org/, 'https://a.tile.openstreetmap.org');
+            const match = (await cache.match(canonical)) || (await cache.match(src));
+            if (match && match.type !== 'opaque') {
+              const blob = await match.blob();
+              if (blob.size > 0) {
+                img.src = URL.createObjectURL(blob);
+                return;
+              }
+            }
+          }
+        } catch {}
+      });
+      return tl;
     };
 
     if (mapStyle === 'standard') { 
-      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { 
-        ...smoothTileOpts,
-        className: 'dark-tiles', 
-        maxZoom: 19, 
-        zIndex: 1,
-        attribution: '© OpenStreetMap'
-      }).addTo(mapRef.current); 
+      attachOfflineCacheFallback(
+        L.tileLayer('https://a.tile.openstreetmap.org/{z}/{x}/{y}.png', { 
+          ...smoothTileOpts,
+          className: 'dark-tiles', 
+          maxZoom: 19, 
+          zIndex: 1,
+          attribution: '© OpenStreetMap'
+        })
+      ).addTo(mapRef.current); 
     } else if (mapStyle === 'satellite') { 
-      L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', { 
-        ...smoothTileOpts,
-        maxZoom: 19, 
-        attribution: 'Esri World Imagery', 
-        zIndex: 1 
-      }).addTo(mapRef.current); 
-      L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}', { 
-        ...smoothTileOpts,
-        maxZoom: 19, 
-        zIndex: 3, 
-        attribution: 'Esri' 
-      }).addTo(mapRef.current); 
+      attachOfflineCacheFallback(
+        L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', { 
+          ...smoothTileOpts,
+          maxZoom: 19, 
+          attribution: 'Esri World Imagery', 
+          zIndex: 1 
+        })
+      ).addTo(mapRef.current); 
+      attachOfflineCacheFallback(
+        L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}', { 
+          ...smoothTileOpts,
+          maxZoom: 19, 
+          zIndex: 3, 
+          attribution: 'Esri' 
+        })
+      ).addTo(mapRef.current); 
     } else if (mapStyle === 'hybrid') { 
       // 1. Base Satellite Imagery
-      L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', { 
-        ...smoothTileOpts,
-        maxZoom: 19, 
-        attribution: 'Esri World Imagery', 
-        zIndex: 1 
-      }).addTo(mapRef.current); 
+      attachOfflineCacheFallback(
+        L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', { 
+          ...smoothTileOpts,
+          maxZoom: 19, 
+          attribution: 'Esri World Imagery', 
+          zIndex: 1 
+        })
+      ).addTo(mapRef.current); 
       // 2. Strade e Viabilità
-      L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Transportation/MapServer/tile/{z}/{y}/{x}', { 
-        ...smoothTileOpts,
-        maxZoom: 19, 
-        zIndex: 3, 
-        attribution: 'Esri Roads' 
-      }).addTo(mapRef.current); 
+      attachOfflineCacheFallback(
+        L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Transportation/MapServer/tile/{z}/{y}/{x}', { 
+          ...smoothTileOpts,
+          maxZoom: 19, 
+          zIndex: 3, 
+          attribution: 'Esri Roads' 
+        })
+      ).addTo(mapRef.current); 
       // 3. Toponimi e Confini
-      L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}', { 
-        ...smoothTileOpts,
-        maxZoom: 19, 
-        zIndex: 4, 
-        attribution: 'Esri Places' 
-      }).addTo(mapRef.current); 
+      attachOfflineCacheFallback(
+        L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}', { 
+          ...smoothTileOpts,
+          maxZoom: 19, 
+          zIndex: 4, 
+          attribution: 'Esri Places' 
+        })
+      ).addTo(mapRef.current); 
       // 4. Sentieri Escursionistici Alpini (Waymarked Trails)
-      L.tileLayer('https://tile.waymarkedtrails.org/hiking/{z}/{x}/{y}.png', { 
-        ...smoothTileOpts,
-        maxZoom: 18, 
-        zIndex: 5, 
-        opacity: 0.85, 
-        attribution: '© Waymarked Trails' 
-      }).addTo(mapRef.current); 
+      attachOfflineCacheFallback(
+        L.tileLayer('https://tile.waymarkedtrails.org/hiking/{z}/{x}/{y}.png', { 
+          ...smoothTileOpts,
+          maxNativeZoom: isOffline ? 16 : 17,
+          maxZoom: 19, 
+          zIndex: 5, 
+          opacity: 0.85, 
+          attribution: '© Waymarked Trails' 
+        })
+      ).addTo(mapRef.current); 
     }
-  }, [mapStyle, isMapReady]);
+  }, [mapStyle, isMapReady, isOffline]);
   
   const updateMapClusters = useCallback(() => {
     if (!mapRef.current || !isMapReady || viewMode !== 'map') return;
@@ -3534,52 +4278,7 @@ ${trkptsXml}
             <button onClick={() => setIsSidebarOpen(false)} className="p-2 hover:bg-zinc-800 rounded-lg text-zinc-400 hover:text-white transition-colors cursor-pointer"><X size={20}/></button>
           </div>
           <div className="flex-1 overflow-y-auto p-5 space-y-6">
-            {/* PWA Install Action Card */}
-            {!isInstalled && (
-              <section className="bg-gradient-to-br from-orange-950/40 via-zinc-900 to-zinc-900 border border-orange-500/40 rounded-2xl p-4 shadow-lg">
-                <div className="flex items-center gap-3 mb-2.5">
-                  <div className="w-9 h-9 rounded-xl bg-orange-600 flex items-center justify-center text-white shrink-0 shadow-md">
-                    <Download size={18}/>
-                  </div>
-                  <div className="min-w-0">
-                    <h4 className="text-xs font-bold text-white leading-tight">Installa MountPro</h4>
-                    <p className="text-[10px] text-zinc-400 truncate">App nativa a tutto schermo & offline</p>
-                  </div>
-                </div>
-                {isInstallable ? (
-                  <button
-                    onClick={async () => {
-                      const installed = await installPwa();
-                      if (installed) showToast("App installata con successo!");
-                    }}
-                    className="w-full py-2 bg-orange-600 hover:bg-orange-500 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-2 transition-colors cursor-pointer shadow-md"
-                  >
-                    <Download size={14}/> Installa su Smartphone
-                  </button>
-                ) : isIOS ? (
-                  <button
-                    onClick={() => setShowIOSGuide(true)}
-                    className="w-full py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 border border-zinc-700 rounded-xl text-xs font-bold flex items-center justify-center gap-2 transition-colors cursor-pointer"
-                  >
-                    Istruzioni per iPhone
-                  </button>
-                ) : (
-                  <button
-                    onClick={async () => {
-                      if (installPwa) {
-                        const res = await installPwa();
-                        if (res) return;
-                      }
-                      showToast("Tocca ⋮ in Chrome e seleziona 'Installa app'");
-                    }}
-                    className="w-full py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 border border-zinc-700 rounded-xl text-xs font-bold flex items-center justify-center gap-2 transition-colors cursor-pointer"
-                  >
-                    <Download size={14}/> Installa App
-                  </button>
-                )}
-              </section>
-            )}
-
+            {/* Rimossa sezione 'Installa MountPro' da Filtri come richiesto dall'utente */}
             <section>
               <div className="flex items-center justify-between mb-3">
                 <h3 className="text-xs font-bold text-zinc-500 uppercase tracking-wider">Tipologia</h3>
@@ -3796,6 +4495,22 @@ ${trkptsXml}
               >
                 {confirmClearDb ? 'Tocca di nuovo per confermare svuotamento' : 'Svuota Database Locale'}
               </button>
+
+              {/* Accesso rapido alla pagina intera Impostazioni Utente & Configurazione App anche dalla barra Filtri */}
+              <button
+                type="button"
+                onClick={() => {
+                  setIsSidebarOpen(false);
+                  setIsSettingsOpen(true);
+                }}
+                className="w-full py-2.5 px-3 bg-zinc-800 hover:bg-zinc-700 text-zinc-100 rounded-xl text-xs font-bold flex items-center justify-between transition-colors border border-zinc-700 cursor-pointer mt-2"
+              >
+                <span className="flex items-center gap-2">
+                  <Settings size={14} className="text-orange-400" />
+                  Impostazioni Utente, SOS 112 & Backup
+                </span>
+                <ChevronRight size={14} className="text-zinc-400" />
+              </button>
             </section>
           </div>
 
@@ -3819,15 +4534,29 @@ ${trkptsXml}
              <div ref={searchContainerRef} className="flex-1 relative shadow-xl">
                <form onSubmit={handleGlobalSearch} className="w-full relative">
                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-400 pointer-events-none"/>
-                 <input type="text" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} onFocus={() => searchQuery.length >= 3 && setShowSuggestions(true)} placeholder={isOffline ? "Cerca offline..." : "Cerca Luogo..."} className="w-full h-11 bg-zinc-900/95 backdrop-blur border border-zinc-800 rounded-xl pl-10 pr-10 text-sm focus:ring-2 focus:ring-orange-500 outline-none text-zinc-200 placeholder:text-zinc-500 transition-all"/>
-                 {isGlobalSearching ? (
+                 <input
+                   type="text"
+                   value={searchQuery}
+                   onChange={e => {
+                     setSearchQuery(e.target.value);
+                     setShowSuggestions(true);
+                   }}
+                   onFocus={() => {
+                     setShowSuggestions(true);
+                     setTimeout(() => fullScreenSearchInputRef.current?.focus(), 40);
+                   }}
+                   placeholder={isOffline ? "Cerca bivacco, cima, malga, quota..." : "Cerca bivacco, cima, malga, valle..."}
+                   className="w-full h-11 bg-zinc-900/95 backdrop-blur border border-zinc-800 rounded-xl pl-10 pr-10 text-sm focus:ring-2 focus:ring-orange-500 outline-none text-zinc-200 placeholder:text-zinc-500 transition-all cursor-text"
+                 />
+                 {isGlobalSearching || isRemoteAutocompleteLoading ? (
                    <Loader2 className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-orange-500 animate-spin"/>
                  ) : searchQuery.length > 0 ? (
                    <button
                      type="button"
                      onClick={() => {
                        setSearchQuery('');
-                       setShowSuggestions(false);
+                       setSearchOsmSubkindFilter('all');
+                       setActiveSuggestionIndex(-1);
                      }}
                      className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 rounded-lg text-zinc-400 hover:text-white hover:bg-zinc-800 transition-colors cursor-pointer"
                      title="Cancella ricerca"
@@ -3838,38 +4567,419 @@ ${trkptsXml}
                    <WifiOff className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-orange-500"/>
                  ) : null}
                </form>
-               {/* AUTOCOMPLETE DROPDOWN (ONLINE + OFFLINE DB LOCALE) */}
-               {showSuggestions && searchSuggestions.length > 0 && (
-                   <div className="absolute top-full left-0 right-0 mt-2 bg-zinc-900 border border-zinc-700 rounded-xl shadow-2xl overflow-hidden max-h-60 overflow-y-auto z-[3000] animate-in fade-in slide-in-from-top-2">
-                       {searchSuggestions.map((suggestion) => (
-                           <div 
-                                key={suggestion.id} 
-                                onClick={() => handleSuggestionClick(suggestion)}
-                                className="px-4 py-3 hover:bg-zinc-800 cursor-pointer border-b border-zinc-800 last:border-0 flex items-center gap-3 transition-colors"
-                           >
-                               <div className="w-8 h-8 rounded-full bg-zinc-800 border border-zinc-700 flex items-center justify-center text-zinc-400 shrink-0">
-                                   {suggestion.type === POIType.REFUGE ? <Home size={14}/> : suggestion.type === POIType.BIVOUAC ? <Tent size={14}/> : suggestion.type === POIType.FOUNTAIN ? <Droplets size={14}/> : <MapPin size={14}/>}
-                               </div>
-                               <div className="min-w-0">
-                                   <div className="text-sm font-bold text-zinc-200 truncate">{suggestion.name}</div>
-                                   <div className="text-[10px] text-zinc-500 truncate">{suggestion.description}</div>
-                               </div>
-                           </div>
-                       ))}
-                   </div>
-               )}
              </div>
+
+             {/* --- VISTA RICERCA A SCHERMO INTERO STILE OSMAND --- */}
+             {showSuggestions && (() => {
+               const refOrigin = userLocation || mapViewState.current.center;
+               const isShortQuery = searchQuery.trim().length < 2;
+               const showingRecents =
+                 isShortQuery &&
+                 recentSearchPois.length > 0 &&
+                 searchCategoryFilter === 'all' &&
+                 searchOsmSubkindFilter === 'all';
+
+               const rawBaseList = (showingRecents ? recentSearchPois : searchSuggestions).map(p =>
+                 enrichPoiWithOsmAndMeta(p)
+               );
+
+               // Categorie dinamiche in stile OsmAnd (mostra in cima i chip presenti nei risultati + categorie alpine principali)
+               const standardOsmChipDefs: { id: string; label: string }[] = [
+                 { id: 'all', label: 'Tutti' },
+                 { id: 'Strada', label: 'Strada' },
+                 { id: 'Picco montuoso', label: 'Picco montuoso' },
+                 { id: 'Ruscello', label: 'Ruscello' },
+                 { id: 'Riserva naturale', label: 'Riserva naturale' },
+                 { id: 'Valle', label: 'Valle' },
+                 { id: 'Pensilina o ricovero', label: 'Pensilina o ricovero' },
+                 { id: 'Bivacco', label: 'Bivacco' },
+                 { id: 'Rifugio', label: 'Rifugio' },
+                 { id: 'Passo montano', label: 'Passo montano' },
+                 { id: 'Fontana / Sorgente', label: 'Fontana / Sorgente' },
+               ];
+
+               const presentLabels = new Set(
+                 rawBaseList.map(p => p.categoryLabel || p.type).filter(Boolean)
+               );
+               const sortedChipDefs = [
+                 standardOsmChipDefs[0],
+                 ...standardOsmChipDefs.slice(1).filter(c => presentLabels.has(c.id)),
+                 ...standardOsmChipDefs.slice(1).filter(c => !presentLabels.has(c.id)),
+               ];
+
+               // Filtra per chip categoria selezionato e ordina per Rilevanza o Distanza
+               const filteredByChip =
+                 searchOsmSubkindFilter === 'all'
+                   ? rawBaseList
+                   : rawBaseList.filter(
+                       p => (p.categoryLabel || p.type) === searchOsmSubkindFilter
+                     );
+
+               const displayList =
+                 searchSortMode === 'distance'
+                   ? [...filteredByChip].sort((a, b) => {
+                       const dA = getDistance(
+                         refOrigin.lat,
+                         refOrigin.lng,
+                         a.coordinates.lat,
+                         a.coordinates.lng
+                       );
+                       const dB = getDistance(
+                         refOrigin.lat,
+                         refOrigin.lng,
+                         b.coordinates.lat,
+                         b.coordinates.lng
+                       );
+                       return dA - dB;
+                     })
+                   : filteredByChip;
+
+               // Icona specifica stile OsmAnd nel box scuro a destra
+               const renderOsmAndRightIcon = (poi: POI) => {
+                 const sk = poi.osmSubkind;
+                 if (sk === 'peak' || poi.categoryLabel === 'Picco montuoso') {
+                   return (
+                     <svg width="18" height="18" viewBox="0 0 24 24" className="text-orange-500 fill-current">
+                       <polygon points="12 4 21 20 3 20" />
+                     </svg>
+                   );
+                 }
+                 if (sk === 'stream' || poi.categoryLabel === 'Ruscello') {
+                   return <Waves size={19} className="text-orange-500" />;
+                 }
+                 if (sk === 'reserve' || poi.categoryLabel === 'Riserva naturale') {
+                   return (
+                     <div className="w-6 h-6 rounded-full border-2 border-orange-500 flex items-center justify-center text-orange-500">
+                       <Leaf size={12} className="fill-current" />
+                     </div>
+                   );
+                 }
+                 if (sk === 'valley' || poi.categoryLabel === 'Valle') {
+                   return <Mountain size={19} className="text-orange-500" />;
+                 }
+                 if (sk === 'shelter' || poi.categoryLabel === 'Pensilina o ricovero') {
+                   return (
+                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-orange-500">
+                       <path d="M3 12l9-5 9 5" />
+                       <path d="M6 12v7M18 12v7" />
+                       <path d="M8 4l-1 2M12 3l-1 2M16 4l-1 2" strokeWidth="1.6" />
+                     </svg>
+                   );
+                 }
+                 if (sk === 'bivouac' || poi.type === POIType.BIVOUAC) {
+                   return <Tent size={19} className="text-orange-500" />;
+                 }
+                 if (sk === 'refuge' || poi.type === POIType.REFUGE) {
+                   return <Home size={19} className="text-orange-500" />;
+                 }
+                 if (sk === 'road' || poi.categoryLabel === 'Strada' || poi.categoryLabel === 'Sentiero') {
+                   return <Building size={18} className="text-zinc-400" />;
+                 }
+                 if (sk === 'fountain' || poi.type === POIType.FOUNTAIN) {
+                   return <Droplets size={18} className="text-orange-500" />;
+                 }
+                 if (sk === 'saddle' || poi.categoryLabel === 'Passo montano') {
+                   return <Compass size={18} className="text-orange-500" />;
+                 }
+                 return <MapPin size={18} className="text-orange-500" />;
+               };
+
+               return (
+                 <div className="fixed inset-0 z-[5500] bg-[#141517] text-zinc-100 flex flex-col pointer-events-auto animate-in fade-in duration-150">
+                   {/* 1. Barra Superiore Stile OsmAnd: Freccia Indietro + Input Largo + X */}
+                   <div className="h-14 px-3 border-b border-zinc-800/90 bg-[#1c1d21] flex items-center gap-3 shrink-0">
+                     <button
+                       type="button"
+                       onClick={() => setShowSuggestions(false)}
+                       className="w-10 h-10 rounded-full flex items-center justify-center text-zinc-300 hover:text-white hover:bg-zinc-800 transition-colors cursor-pointer shrink-0"
+                       title="Torna alla mappa"
+                     >
+                       <ChevronLeft size={24} />
+                     </button>
+
+                     <form onSubmit={handleGlobalSearch} className="flex-1 flex items-center">
+                       <input
+                         ref={fullScreenSearchInputRef}
+                         type="text"
+                         autoFocus
+                         value={searchQuery}
+                         onChange={e => {
+                           setSearchQuery(e.target.value);
+                           setSearchOsmSubkindFilter('all');
+                         }}
+                         onKeyDown={e => {
+                           if (e.key === 'ArrowDown') {
+                             e.preventDefault();
+                             setActiveSuggestionIndex(prev =>
+                               displayList.length > 0 ? (prev + 1) % displayList.length : -1
+                             );
+                           } else if (e.key === 'ArrowUp') {
+                             e.preventDefault();
+                             setActiveSuggestionIndex(prev =>
+                               displayList.length > 0
+                                 ? (prev - 1 + displayList.length) % displayList.length
+                                 : -1
+                             );
+                           } else if (e.key === 'Escape') {
+                             setShowSuggestions(false);
+                           }
+                         }}
+                         placeholder="Cerca vetta, bivacco, malga, valle, sentiero..."
+                         className="w-full bg-transparent text-[17px] font-normal text-zinc-100 placeholder:text-zinc-500 outline-none"
+                       />
+                     </form>
+
+                     {isGlobalSearching || isRemoteAutocompleteLoading ? (
+                       <div className="w-10 h-10 flex items-center justify-center shrink-0">
+                         <Loader2 size={19} className="text-orange-500 animate-spin" />
+                       </div>
+                     ) : (
+                       <button
+                         type="button"
+                         onClick={() => {
+                           if (searchQuery.length > 0) {
+                             setSearchQuery('');
+                             setSearchOsmSubkindFilter('all');
+                             fullScreenSearchInputRef.current?.focus();
+                           } else {
+                             setShowSuggestions(false);
+                           }
+                         }}
+                         className="w-10 h-10 rounded-full flex items-center justify-center text-zinc-400 hover:text-white hover:bg-zinc-800 transition-colors cursor-pointer shrink-0"
+                         title={searchQuery.length > 0 ? 'Cancella testo' : 'Chiudi ricerca'}
+                       >
+                         <X size={20} />
+                       </button>
+                     )}
+                   </div>
+
+                   {/* 2. Barra Selettore Ordinamento (Rilevanza / Distanza) + Chip Categorie Scorrevoli Stile OsmAnd */}
+                   <div className="px-4 pt-3 pb-3 bg-[#141517] border-b border-zinc-800/80 space-y-3 shrink-0">
+                     <div className="flex items-center justify-between gap-2">
+                       <button
+                         type="button"
+                         onClick={() =>
+                           setSearchSortMode(prev => (prev === 'relevance' ? 'distance' : 'relevance'))
+                         }
+                         className="px-3.5 py-1.5 rounded-xl bg-[#1e2024] hover:bg-zinc-800 border border-zinc-700/80 flex items-center gap-2 text-sm font-medium text-zinc-200 transition-colors cursor-pointer"
+                       >
+                         <span className="text-orange-500 font-bold text-xs tracking-tighter">↓↑</span>
+                         <span>{searchSortMode === 'relevance' ? 'Rilevanza' : 'Distanza'}</span>
+                         <ChevronDown size={15} className="text-zinc-400 ml-0.5" />
+                       </button>
+
+                       <div className="flex items-center gap-2 text-xs text-zinc-400">
+                         {showingRecents ? (
+                           <button
+                             type="button"
+                             onClick={clearRecentSearches}
+                             className="text-xs text-zinc-400 hover:text-red-400 font-medium cursor-pointer"
+                           >
+                             Cancella recenti
+                           </button>
+                         ) : (
+                           <span className="text-zinc-500">
+                             {displayList.length} risultati
+                             {isRemoteAutocompleteLoading ? ' • ricerca in corso...' : ''}
+                           </span>
+                         )}
+                       </div>
+                     </div>
+
+                     {/* Chip Categorie Scorrevoli Orizzontalmente */}
+                     <div className="flex items-center gap-2 overflow-x-auto no-scrollbar pb-0.5">
+                       {sortedChipDefs.map(chip => {
+                         const isSelected = searchOsmSubkindFilter === chip.id;
+                         return (
+                           <button
+                             key={chip.id}
+                             type="button"
+                             onClick={() =>
+                               setSearchOsmSubkindFilter(prev =>
+                                 prev === chip.id && chip.id !== 'all' ? 'all' : chip.id
+                               )
+                             }
+                             className={`px-4 py-2 rounded-xl text-[13.5px] font-medium whitespace-nowrap transition-all cursor-pointer border ${
+                               isSelected
+                                 ? 'bg-orange-500/20 border-orange-500 text-orange-400 font-semibold'
+                                 : 'bg-[#1e2024] border-zinc-700/70 text-zinc-200 hover:bg-zinc-800'
+                             }`}
+                           >
+                             {chip.label}
+                           </button>
+                         );
+                       })}
+                     </div>
+                   </div>
+
+                   {/* 3. Lista Risultati a Tutta Larghezza con 3 Righe Pulite Stile OsmAnd */}
+                   <div className="flex-1 overflow-y-auto divide-y divide-zinc-800/70 bg-[#18191c] pb-24">
+                     {displayList.length === 0 ? (
+                       <div className="px-6 py-14 text-center space-y-2">
+                         <div className="text-base font-medium text-zinc-300">
+                           {isRemoteAutocompleteLoading
+                             ? `Ricerca di "${searchQuery}" sull'arco alpino...`
+                             : `Nessun risultato trovato per "${searchQuery}"`}
+                         </div>
+                         <div className="text-xs text-zinc-500 max-w-sm mx-auto">
+                           Prova a cercare il nome di una cima, malga, bivacco, valle o ruscello (es. "Tolvà", "Pelmo", "Bedin") oppure inserisci coordinate GPS.
+                         </div>
+                       </div>
+                     ) : (
+                       displayList.map((suggestion, idx) => {
+                         const distKm = getDistance(
+                           refOrigin.lat,
+                           refOrigin.lng,
+                           suggestion.coordinates.lat,
+                           suggestion.coordinates.lng
+                         );
+                         const brg = computeBearing(
+                           refOrigin.lat,
+                           refOrigin.lng,
+                           suggestion.coordinates.lat,
+                           suggestion.coordinates.lng
+                         );
+                         const isFav = favorites.has(suggestion.id);
+                         const isHighlighted = idx === activeSuggestionIndex;
+
+                         const formattedDist =
+                           distKm < 1
+                             ? `${Math.round(distKm * 1000)} m`
+                             : `${distKm.toFixed(1).replace('.', ',')} km`;
+
+                         const catLabel = suggestion.categoryLabel || suggestion.type;
+                         const locName = suggestion.locality || '';
+                         const isRoadLike =
+                           suggestion.osmSubkind === 'road' ||
+                           catLabel === 'Strada' ||
+                           catLabel === 'Sentiero';
+
+                         return (
+                           <div
+                             key={suggestion.id}
+                             onClick={() => handleSuggestionClick(suggestion, false)}
+                             className={`px-4 py-3.5 cursor-pointer flex items-center justify-between gap-4 transition-colors ${
+                               isHighlighted ? 'bg-zinc-800/90' : 'hover:bg-zinc-900/70 active:bg-zinc-800/70'
+                             }`}
+                           >
+                             {/* Colonna Testuale Sinistra a Tutta Larghezza (Mai schiacciata) */}
+                             <div className="min-w-0 flex-1">
+                               {/* Riga 1: Titolo Completo in Bianco */}
+                               <div className="flex items-center gap-2">
+                                 <span className="text-[16.5px] font-normal text-zinc-100 leading-snug break-words">
+                                   {suggestion.name}
+                                 </span>
+                                 {isFav && (
+                                   <Heart size={13} className="text-red-500 fill-red-500 shrink-0" />
+                                 )}
+                               </div>
+
+                               {/* Riga 2: Freccia Direzionale Arancione + Distanza Arancione + • + Tipo Elemento (+ Comune su riga 2 se Strada, come in OsmAnd) */}
+                               <div className="flex items-center gap-1.5 text-[13.5px] mt-1 flex-wrap leading-tight">
+                                 <svg
+                                   width="11"
+                                   height="11"
+                                   viewBox="0 0 24 24"
+                                   style={{ transform: `rotate(${brg.deg}deg)` }}
+                                   className="text-orange-500 fill-current shrink-0 transition-transform"
+                                 >
+                                   <polygon points="12 2 21 21 12 17 3 21" />
+                                 </svg>
+                                 <span className="text-orange-500 font-medium">
+                                   {formattedDist}
+                                 </span>
+                                 <span className="text-zinc-500">•</span>
+                                 <span className="text-zinc-400">
+                                   {catLabel}
+                                 </span>
+                                 {isRoadLike && locName && (
+                                   <>
+                                     <span className="text-zinc-500">•</span>
+                                     <span className="text-zinc-400">{locName}</span>
+                                   </>
+                                 )}
+                                 {suggestion.altitude > 0 && (
+                                   <>
+                                     <span className="text-zinc-500">•</span>
+                                     <span className="text-zinc-400">{suggestion.altitude} m</span>
+                                   </>
+                                 )}
+                               </div>
+
+                               {/* Riga 3: Comune / Località (per vette, malghe, valli, ruscelli, bivacchi, rifugi) */}
+                               {!isRoadLike && locName && (
+                                 <div className="text-[13.5px] text-zinc-400 mt-0.5 leading-tight">
+                                   {locName}
+                                 </div>
+                               )}
+                             </div>
+
+                             {/* Colonna Destra: Singolo Box Quadrato Scuro con Icona Specifica Categoria Stile OsmAnd */}
+                             <div className="w-10 h-10 rounded-lg bg-[#121316] border border-zinc-800/90 flex items-center justify-center shrink-0">
+                               {renderOsmAndRightIcon(suggestion)}
+                             </div>
+                           </div>
+                         );
+                       })
+                     )}
+                   </div>
+
+                   {/* 4. Pulsante Flottante Mappa in Basso a Destra (Stile OsmAnd) per visualizzare i risultati sulla mappa */}
+                   <button
+                     type="button"
+                     onClick={() => {
+                       if (displayList.length > 0 && searchQuery.trim().length >= 2) {
+                         handleSuggestionClick(displayList[0], false);
+                       } else {
+                         setShowSuggestions(false);
+                       }
+                     }}
+                     className="fixed bottom-6 right-5 z-[5600] w-14 h-14 rounded-2xl bg-[#4a2e16] hover:bg-[#5c391c] active:scale-95 border border-orange-500/30 text-orange-400 shadow-2xl flex items-center justify-center transition-all cursor-pointer"
+                     title="Mostra risultati sulla mappa"
+                   >
+                     <MapIcon size={24} />
+                   </button>
+                 </div>
+               );
+             })()}
              {(() => {
                const activeCount = selectedTypes.length + (minAltitude > 0 || maxAltitude < 4810 ? 1 : 0) + (filterWater ? 1 : 0) + (filterRoof ? 1 : 0) + (filterFireplace ? 1 : 0) + (filterOpen ? 1 : 0) + (filterFee ? 1 : 0) + (showFavoritesOnly ? 1 : 0) + (minCapacity > 0 ? 1 : 0) + (selectedExposures.length > 0 ? 1 : 0) + (filterByTrack ? 1 : 0);
                return (
-                 <button onClick={() => setIsSidebarOpen(true)} className={`relative w-11 h-11 bg-zinc-900/95 backdrop-blur border rounded-xl flex items-center justify-center shadow-xl transition-all shrink-0 cursor-pointer ${activeCount > 0 ? 'border-orange-500 text-orange-500' : 'border-zinc-800 text-zinc-300 hover:text-white'}`} title="Apri filtri">
-                   <Filter size={18}/>
-                   {activeCount > 0 && (
-                     <span className="absolute -top-1.5 -right-1.5 min-w-[18px] h-[18px] px-1 rounded-full bg-orange-600 text-white text-[10px] font-bold flex items-center justify-center border border-zinc-950 shadow">
-                       {activeCount}
-                     </span>
-                   )}
-                 </button>
+                 <>
+                   <button
+                     onClick={() => {
+                       setCustomAreaSelecting(false);
+                       setIsOfflineManagerOpen(true);
+                     }}
+                     className={`relative w-11 h-11 bg-zinc-900/95 backdrop-blur border rounded-xl flex items-center justify-center shadow-xl transition-all shrink-0 cursor-pointer ${
+                       isDownloading
+                         ? 'border-orange-500 text-orange-400'
+                         : savedOfflinePackages.length > 0
+                         ? 'border-emerald-500/60 text-emerald-400 hover:text-emerald-300'
+                         : 'border-zinc-800 text-zinc-300 hover:text-white'
+                     }`}
+                     title="Apri Pagina Mappe Offline"
+                   >
+                     {isDownloading ? (
+                       <Loader2 size={18} className="animate-spin text-orange-400" />
+                     ) : (
+                       <Download size={18} />
+                     )}
+                     {savedOfflinePackages.length > 0 && !isDownloading && (
+                       <span className="absolute -top-1.5 -right-1.5 min-w-[18px] h-[18px] px-1 rounded-full bg-emerald-600 text-white text-[10px] font-bold flex items-center justify-center border border-zinc-950 shadow">
+                         {savedOfflinePackages.length}
+                       </span>
+                     )}
+                   </button>
+                   <button onClick={() => setIsSidebarOpen(true)} className={`relative w-11 h-11 bg-zinc-900/95 backdrop-blur border rounded-xl flex items-center justify-center shadow-xl transition-all shrink-0 cursor-pointer ${activeCount > 0 ? 'border-orange-500 text-orange-500' : 'border-zinc-800 text-zinc-300 hover:text-white'}`} title="Apri filtri">
+                     <Filter size={18}/>
+                     {activeCount > 0 && (
+                       <span className="absolute -top-1.5 -right-1.5 min-w-[18px] h-[18px] px-1 rounded-full bg-orange-600 text-white text-[10px] font-bold flex items-center justify-center border border-zinc-950 shadow">
+                         {activeCount}
+                       </span>
+                     )}
+                   </button>
+                 </>
                );
              })()}
           </div>
@@ -3903,7 +5013,8 @@ ${trkptsXml}
               originAlt,
               targetLock.lat,
               targetLock.lng,
-              targetLock.altitude || originAlt
+              targetLock.altitude || originAlt,
+              userSettings
             );
             const relAngle = (cai.bearingDeg - userHeading + 360) % 360;
             return (
@@ -4639,14 +5750,21 @@ ${trkptsXml}
                     ) : (
                         <div className="space-y-4">
                            {tracks.map((track) => (
-                               <div key={track.id} className="flex items-center justify-between p-3 bg-zinc-800 rounded-lg border border-zinc-700 gap-3"> 
-                                  <button onClick={() => centerOnTrack(track)} className="flex-1 min-w-0 text-left flex items-center gap-2 group cursor-pointer hover:bg-zinc-700/50 rounded p-1 -ml-1 transition-colors"> 
+                               <div key={track.id} className={`flex items-center justify-between p-2.5 bg-zinc-800 rounded-lg border gap-2 transition-opacity ${track.hidden ? 'border-zinc-800 opacity-60' : 'border-zinc-700'}`}> 
+                                  <button onClick={() => { if (track.hidden) toggleTrackVisibility(track.id); centerOnTrack(track); }} className="flex-1 min-w-0 text-left flex items-center gap-2 group cursor-pointer hover:bg-zinc-700/50 rounded p-1 -ml-1 transition-colors"> 
                                     <div className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: track.color }} />
                                     <div className="overflow-x-auto hide-scrollbar whitespace-nowrap mask-linear-fade w-full">
-                                       <span className="text-xs font-bold text-zinc-200 group-hover:text-white transition-colors">{track.name}</span>
+                                       <span className={`text-xs font-bold transition-colors ${track.hidden ? 'line-through text-zinc-500' : 'text-zinc-200 group-hover:text-white'}`}>{track.name}</span>
                                     </div>
                                   </button> 
-                                  <div className="flex items-center gap-1">
+                                  <div className="flex items-center gap-0.5">
+                                      <button
+                                        onClick={() => toggleTrackVisibility(track.id)}
+                                        className={`p-1.5 hover:bg-zinc-700 rounded transition-colors shrink-0 cursor-pointer ${track.hidden ? 'text-zinc-500 hover:text-zinc-300' : 'text-emerald-400 hover:text-emerald-300'}`}
+                                        title={track.hidden ? 'Mostra traccia sulla mappa' : 'Nascondi traccia dalla mappa'}
+                                      >
+                                        {track.hidden ? <EyeOff size={15} /> : <Eye size={15} />}
+                                      </button>
                                       <button onClick={() => { setFocusedTrackId(track.id); setIsTrackPanelOpen(true); setIsTrailsMenuOpen(false); clearInspectedLocation(); centerOnTrack(track, true); }} className="p-1.5 hover:bg-zinc-700 rounded text-zinc-400 hover:text-white transition-colors shrink-0 cursor-pointer" title="Statistiche"> <BarChart3 size={16}/> </button>
                                       <button onClick={() => removeTrack(track.id)} className="p-1.5 hover:bg-zinc-700 rounded text-zinc-400 hover:text-red-400 transition-colors shrink-0 cursor-pointer" title="Rimuovi"> <Trash2 size={16}/> </button> 
                                   </div>
@@ -4655,9 +5773,7 @@ ${trkptsXml}
                            
                            <div> <button onClick={() => setFilterByTrack(!filterByTrack)} className={`w-full flex items-center justify-between p-3 rounded-xl border transition-all mb-3 cursor-pointer ${filterByTrack ? 'bg-purple-900/30 border-purple-500' : 'bg-zinc-800 border-zinc-700'}`}> <span className="flex items-center gap-2 text-xs font-bold"><Filter size={14} className={filterByTrack ? "text-purple-400" : "text-zinc-500"}/> Filtra vicino al percorso</span> <div className={`w-8 h-4 rounded-full relative transition-colors ${filterByTrack ? 'bg-purple-500' : 'bg-zinc-600'}`}> <div className={`absolute top-0.5 w-3 h-3 bg-white rounded-full transition-all ${filterByTrack ? 'left-4.5' : 'left-0.5'}`}/> </div> </button> {filterByTrack && ( <div className="px-1 animate-in slide-in-from-top-2 fade-in"> <div className="flex justify-between text-[10px] uppercase font-bold text-zinc-500 mb-2"> <span>Raggio di Ricerca</span> <span className="text-purple-400">{trackBuffer < 1 ? `${trackBuffer*1000}m` : `${trackBuffer}km`}</span> </div> <input type="range" min="0.5" max="10" step="0.5" value={trackBuffer} onChange={(e) => setTrackBuffer(parseFloat(e.target.value))} className="w-full h-1 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-purple-500" /> </div> )} </div>
                            
-                           {tracks.length < 2 && (
-                               <button onClick={() => fileInputRef.current?.click()} className="w-full py-2 border border-zinc-700 hover:bg-zinc-800 text-zinc-400 rounded-lg text-xs font-bold flex items-center justify-center gap-2 transition-colors cursor-pointer"> <Plus size={12}/> Aggiungi GPX </button>
-                           )}
+                           <button onClick={() => fileInputRef.current?.click()} className="w-full py-2 border border-zinc-700 hover:bg-zinc-800 text-zinc-300 rounded-lg text-xs font-bold flex items-center justify-center gap-2 transition-colors cursor-pointer"> <Plus size={12}/> Aggiungi Traccia GPX ({tracks.length} caricate) </button>
                         </div>
                     )}
                     <div className="mt-3 pt-3 border-t border-zinc-800 space-y-2">
@@ -4766,62 +5882,27 @@ ${trkptsXml}
                       </span>
                     </button>
 
-                    {/* Controlli rapidi & Slider fluido Rotazione Mappa (oltre a 2 dita su touch o Tasto Destro / Alt+Trascina) */}
-                    <div className="bg-zinc-950/60 border border-zinc-800/80 rounded-xl p-2">
-                      <div className="flex items-center justify-between text-[10px] text-zinc-400 mb-1.5">
-                        <span className="font-bold uppercase tracking-wider flex items-center gap-1">
-                          <Compass size={11} className="text-orange-500" /> Orientamento Mappa
-                        </span>
-                        <span className="font-mono text-orange-400 font-bold">
-                          {Math.round((mapBearing % 360 + 360) % 360)}°
-                        </span>
-                      </div>
-                      <input
-                        type="range"
-                        min={0}
-                        max={360}
-                        step={1}
-                        value={Math.round((mapBearing % 360 + 360) % 360)}
-                        onChange={(e) => applyMapBearingLive(Number(e.target.value), false)}
-                        className="w-full h-1.5 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-orange-500 mb-2"
-                        title="Ruota fluidamente la mappa da 0° a 360°"
-                      />
-                      <div className="grid grid-cols-3 gap-1">
-                        <button
-                          onClick={() => applyMapBearingLive(mapBearingRef.current - 45, true)}
-                          className="py-1 px-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded-lg text-[10px] font-bold transition-colors cursor-pointer"
-                          title="Ruota di -45°"
-                        >
-                          ↺ -45°
-                        </button>
-                        <button
-                          onClick={resetMapNorth}
-                          className="py-1 px-2 bg-zinc-800 hover:bg-zinc-700 text-emerald-400 rounded-lg text-[10px] font-bold transition-colors cursor-pointer"
-                          title="Nord in alto (0°)"
-                        >
-                          Nord (0°)
-                        </button>
-                        <button
-                          onClick={() => applyMapBearingLive(mapBearingRef.current + 45, true)}
-                          className="py-1 px-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded-lg text-[10px] font-bold transition-colors cursor-pointer"
-                          title="Ruota di +45°"
-                        >
-                          +45° ↻
-                        </button>
-                      </div>
-                      <p className="text-[9px] text-zinc-500 mt-1 text-center">
-                        Touch: 2 dita · PC: Tasto Destro o Alt + Trascina
-                      </p>
-                    </div>
+                    {/* Rimosso controllo Orientamento Mappa da Mappa e Livelli come richiesto dall'utente */}
                   </div>
 
                   <div className="pt-2 border-t border-zinc-800/80 space-y-1.5">
-                    <div className="flex items-center justify-between px-1 text-[10px] text-zinc-500">
-                      <span className="flex items-center gap-1.5 text-emerald-400/90 font-medium">
+                    <div className="flex items-center justify-between px-1 text-[10px] text-zinc-400">
+                      <span className="flex items-center gap-1.5 text-emerald-400 font-medium">
                         <CheckCircle2 size={11} className="text-emerald-400" />
-                        Offline (Veneto & Trentino)
+                        Mappe Offline ({savedOfflinePackages.length} salvate)
                       </span>
                     </div>
+
+                    <button
+                      onClick={() => {
+                        setIsLayersMenuOpen(false);
+                        setCustomAreaSelecting(false);
+                        setIsOfflineManagerOpen(true);
+                      }}
+                      className="w-full py-2 px-2.5 bg-orange-600 hover:bg-orange-500 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition-colors shadow-md cursor-pointer"
+                    >
+                      <Download size={13} /> Gestisci & Scarica Mappe Offline
+                    </button>
 
                     <button 
                       disabled={isOffline || isDownloading} 
@@ -4829,15 +5910,13 @@ ${trkptsXml}
                       className="w-full py-1.5 px-2.5 bg-zinc-800/80 hover:bg-zinc-800 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg text-[11px] font-medium flex items-center justify-center gap-1.5 text-zinc-300 transition-colors border border-zinc-700/60 cursor-pointer"
                     >
                       {isDownloading ? (
-                        downloadProgress === 'fetching' ? (
-                          <><Loader2 size={12} className="animate-spin text-orange-500"/> Scarico...</>
-                        ) : downloadProgress === 'saving' ? (
-                          <><Database size={12} className="animate-pulse text-emerald-500"/> Salvo {downloadCount} Punti...</>
+                        activeDownloadProgress ? (
+                          <><Loader2 size={12} className="animate-spin text-orange-500"/> {activeDownloadProgress.percent}% ({activeDownloadProgress.completedTiles}/{activeDownloadProgress.totalTiles})</>
                         ) : (
-                          <><CheckCircle2 size={12} className="text-emerald-500"/> Completato</>
+                          <><Loader2 size={12} className="animate-spin text-orange-500"/> Scarico...</>
                         )
                       ) : (
-                        <><Download size={12}/> Scarica area visibile</>
+                        <><MapPin size={12} className="text-emerald-400"/> Scarica rapido vista attuale</>
                       )}
                     </button>
                   </div>
@@ -5748,7 +6827,8 @@ ${trkptsXml}
                             originAlt,
                             selectedPoi.coordinates.lat,
                             selectedPoi.coordinates.lng,
-                            selectedPoi.altitude || originAlt
+                            selectedPoi.altitude || originAlt,
+                            userSettings
                         );
                         const solar = computeSolarTimes(
                             selectedPoi.coordinates.lat,
@@ -6215,6 +7295,1520 @@ ${trkptsXml}
           </div>
         </div>
       )}
+
+      {/* --- [MODULAR FEATURE 5] MIRINO INTERATTIVO SELEZIONE RIQUADRO AREA PERSONALIZZATA (STILE OSMAND / KOMOOT) --- */}
+      {customAreaSelecting && viewMode === 'map' && (
+        <>
+          {/* Cornice visiva mirino sull'area della mappa */}
+          <div className="fixed inset-x-6 top-24 bottom-52 sm:inset-x-20 sm:top-24 sm:bottom-48 z-[3400] pointer-events-none border-2 border-dashed border-orange-500/80 rounded-3xl shadow-[0_0_0_9999px_rgba(9,9,11,0.45)] flex items-center justify-center">
+            <div className="absolute -top-3 left-1/2 -translate-x-1/2 px-3 py-0.5 rounded-full bg-orange-600 text-white text-[10px] font-bold tracking-wide shadow">
+              Muovi e zooma la mappa per inquadrare l'area
+            </div>
+            <div className="w-5 h-5 border-t-2 border-l-2 border-orange-400 absolute top-3 left-3 rounded-tl-md" />
+            <div className="w-5 h-5 border-t-2 border-r-2 border-orange-400 absolute top-3 right-3 rounded-tr-md" />
+            <div className="w-5 h-5 border-b-2 border-l-2 border-orange-400 absolute bottom-3 left-3 rounded-bl-md" />
+            <div className="w-5 h-5 border-b-2 border-r-2 border-orange-400 absolute bottom-3 right-3 rounded-br-md" />
+          </div>
+
+          {/* Barra di controllo inferiore per scaricare il riquadro selezionato */}
+          {(() => {
+            const liveStats = estimateOfflinePackageStats(currentViewportBounds, offlineDownloadStyle);
+            return (
+              <div className="fixed bottom-4 left-3 right-3 sm:left-1/2 sm:-translate-x-1/2 sm:w-[480px] z-[6200] bg-zinc-900/95 backdrop-blur-md border border-zinc-700 rounded-2xl p-4 shadow-2xl animate-in slide-in-from-bottom-4">
+                <div className="flex items-center justify-between gap-2 mb-2.5">
+                  <div>
+                    <h4 className="text-sm font-bold text-white flex items-center gap-2">
+                      <Download size={15} className="text-orange-500" />
+                      Riquadro Mappa Personalizzato
+                    </h4>
+                    <p className="text-[11px] text-zinc-400 font-mono tabular-nums">
+                      Area ~{liveStats.areaKm2} km² · {liveStats.tileCount} tasselli (Z{liveStats.minZoom}–Z{liveStats.maxNativeZoom} + Overzoom Z19) · ~{liveStats.sizeMB} MB
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => {
+                      setCustomAreaSelecting(false);
+                      setIsOfflineManagerOpen(true);
+                    }}
+                    className="p-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-300 hover:text-white transition-colors cursor-pointer"
+                    title="Torna al Centro Mappe Offline"
+                  >
+                    <X size={16} />
+                  </button>
+                </div>
+
+                <div className="flex flex-col sm:flex-row gap-2 mb-2.5">
+                  <input
+                    type="text"
+                    value={customAreaNameDraft}
+                    onChange={(e) => setCustomAreaNameDraft(e.target.value)}
+                    placeholder="Nome pacchetto (es. Val di Fassa / Tofane)"
+                    className="flex-1 h-10 bg-zinc-950 border border-zinc-800 rounded-xl px-3 text-xs text-zinc-100 placeholder:text-zinc-500 focus:border-orange-500 outline-none"
+                  />
+                  <div className="grid grid-cols-3 gap-1 bg-zinc-950 p-1 rounded-xl border border-zinc-800 shrink-0">
+                    {([
+                      { id: 'standard', label: 'OSM' },
+                      { id: 'satellite', label: 'Sat' },
+                      { id: 'hybrid', label: 'Ibrida' },
+                    ] as const).map(st => (
+                      <button
+                        key={st.id}
+                        type="button"
+                        onClick={() => {
+                          setOfflineDownloadStyle(st.id);
+                          setMapStyle(st.id);
+                        }}
+                        className={`px-2.5 py-1.5 rounded-lg text-[11px] font-semibold transition-colors cursor-pointer ${
+                          offlineDownloadStyle === st.id
+                            ? 'bg-orange-600 text-white'
+                            : 'text-zinc-400 hover:text-zinc-200'
+                        }`}
+                      >
+                        {st.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {activeDownloadProgress ? (
+                  <div className="space-y-2 bg-zinc-950 border border-zinc-800 rounded-xl p-3">
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="font-semibold text-zinc-200 truncate">{activeDownloadProgress.phaseLabel}</span>
+                      <span className="font-mono font-bold text-orange-400 tabular-nums">{activeDownloadProgress.percent}%</span>
+                    </div>
+                    <div className="w-full h-2 bg-zinc-800 rounded-full overflow-hidden">
+                      <div
+                        className="h-full bg-orange-500 transition-all duration-200"
+                        style={{ width: `${activeDownloadProgress.percent}%` }}
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      onClick={cancelOfflinePackageDownload}
+                      className="w-full py-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-lg text-xs font-semibold cursor-pointer"
+                    >
+                      Annulla download
+                    </button>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setCustomAreaSelecting(false);
+                        setIsOfflineManagerOpen(true);
+                      }}
+                      className="py-2.5 px-3 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-xl text-xs font-semibold transition-colors cursor-pointer"
+                    >
+                      Catalogo Regioni
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isOffline || isDownloading}
+                      onClick={downloadMapArea}
+                      className="flex-1 py-2.5 px-4 bg-orange-600 hover:bg-orange-500 disabled:opacity-50 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-2 shadow-lg transition-colors cursor-pointer"
+                    >
+                      <Download size={15} />
+                      Scarica Quest'Area ({liveStats.sizeMB} MB)
+                    </button>
+                  </div>
+                )}
+              </div>
+            );
+          })()}
+        </>
+      )}
+
+      {/* Banner compatto su Mappa quando un download continua in background fuori dalla pagina Mappe Offline */}
+      {!isOfflineManagerOpen && !customAreaSelecting && activeDownloadProgress && (
+        <div className="fixed bottom-4 left-3 right-3 sm:left-1/2 sm:-translate-x-1/2 sm:w-[420px] z-[6500] bg-zinc-900/95 backdrop-blur-md border border-orange-500/60 rounded-2xl p-3 shadow-2xl animate-in slide-in-from-bottom-3">
+          <div className="flex items-center justify-between gap-2 mb-1.5">
+            <button
+              type="button"
+              onClick={() => setIsOfflineManagerOpen(true)}
+              className="flex items-center gap-2 min-w-0 text-left cursor-pointer flex-1"
+            >
+              <Loader2 size={15} className="animate-spin text-orange-400 shrink-0" />
+              <div className="min-w-0">
+                <div className="text-xs font-bold text-white truncate">
+                  {activeDownloadProgress.packageName}
+                </div>
+                <div className="text-[10px] text-orange-300 truncate">
+                  {activeDownloadProgress.phaseLabel}
+                </div>
+              </div>
+            </button>
+            <div className="flex items-center gap-2 shrink-0">
+              <span className="text-xs font-mono font-bold text-orange-400 tabular-nums">
+                {activeDownloadProgress.percent}%
+              </span>
+              <button
+                type="button"
+                onClick={cancelOfflinePackageDownload}
+                className="p-1 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-400 hover:text-white cursor-pointer"
+                title="Annulla download"
+              >
+                <X size={13} />
+              </button>
+            </div>
+          </div>
+          <div className="w-full h-1.5 bg-zinc-800 rounded-full overflow-hidden">
+            <div
+              className="h-full bg-orange-500 transition-all duration-150"
+              style={{ width: `${activeDownloadProgress.percent}%` }}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* --- [MODULAR FEATURE 5] PAGINA INTERA DEDICATA: GESTIONE MAPPE OFFLINE & AREE ALPINE --- */}
+      {isOfflineManagerOpen && (
+        <div className="fixed inset-0 z-[7500] w-screen h-[100dvh] bg-zinc-950 flex flex-col overflow-hidden animate-in fade-in duration-150">
+          {/* Top Navigation Bar a Pagina Intera */}
+          <header className="border-b border-zinc-800 bg-zinc-900/90 backdrop-blur-md shrink-0">
+            <div className="max-w-7xl mx-auto w-full px-4 sm:px-6 lg:px-8 py-3.5 flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center gap-3 min-w-0">
+                <button
+                  type="button"
+                  onClick={() => setIsOfflineManagerOpen(false)}
+                  className="px-3.5 py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-zinc-100 hover:text-white text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer shrink-0 shadow-sm"
+                  title="Torna alla Mappa"
+                >
+                  <ChevronLeft size={16} className="text-orange-400" />
+                  <span>Torna alla Mappa</span>
+                </button>
+
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2">
+                    <h1 className="text-base sm:text-xl font-bold text-white truncate">
+                      Centro Mappe Offline
+                    </h1>
+                    <span
+                      className={`px-2 py-0.5 rounded-md text-[10px] font-bold uppercase tracking-wide border ${
+                        isOffline
+                          ? 'bg-orange-950/60 border-orange-500/50 text-orange-300'
+                          : 'bg-emerald-950/50 border-emerald-500/40 text-emerald-300'
+                      }`}
+                    >
+                      {isOffline ? 'Modalità Offline Attiva' : 'Online · Turbo Download'}
+                    </span>
+                  </div>
+                  <p className="text-xs text-zinc-400 truncate hidden sm:block">
+                    Cartografia Multi-Zoom (con Overzoom fino a Z19) · Bivacchi & Rifugi · Quote DEM · Rete Sentieri CAI
+                  </p>
+                </div>
+              </div>
+
+              {/* Metriche Storage e Contatori per Formato in Header */}
+              <div className="flex flex-wrap items-center gap-3 text-xs font-mono tabular-nums bg-zinc-950/90 border border-zinc-800 rounded-xl px-3.5 py-2">
+                <span className="text-zinc-300">
+                  Salvate: <strong className="text-white">{savedOfflinePackages.length}</strong>
+                </span>
+                <span className="text-zinc-700">|</span>
+                <span className="text-zinc-300">
+                  Spazio:{" "}
+                  <strong className="text-emerald-400">
+                    {(
+                      savedOfflinePackages.reduce((acc, p) => acc + (p.sizeBytes || 0), 0) /
+                      (1024 * 1024)
+                    ).toFixed(1)}{" "}
+                    MB
+                  </strong>
+                </span>
+                <span className="text-zinc-700 hidden md:inline">|</span>
+                <span className="hidden md:inline text-orange-400">
+                  OSM: {savedOfflinePackages.filter(p => p.mapStyle === 'standard').length}
+                </span>
+                <span className="hidden md:inline text-sky-400">
+                  Sat: {savedOfflinePackages.filter(p => p.mapStyle === 'satellite').length}
+                </span>
+                <span className="hidden md:inline text-emerald-400">
+                  Ibrida: {savedOfflinePackages.filter(p => p.mapStyle === 'hybrid').length}
+                </span>
+              </div>
+            </div>
+
+            {/* Barra Progresso Download Attivo Integrata nell'Header Pagina */}
+            {activeDownloadProgress && (
+              <div className="border-t border-orange-500/40 bg-orange-950/30">
+                <div className="max-w-7xl mx-auto w-full px-4 sm:px-6 lg:px-8 py-3">
+                  <div className="flex items-center justify-between gap-3 mb-1.5">
+                    <div className="min-w-0 flex items-center gap-2.5">
+                      <Loader2 size={16} className="animate-spin text-orange-400 shrink-0" />
+                      <div className="min-w-0">
+                        <div className="text-xs sm:text-sm font-bold text-white truncate">
+                          Download Turbo in corso: {activeDownloadProgress.packageName}
+                        </div>
+                        <div className="text-[11px] text-orange-300 truncate">
+                          {activeDownloadProgress.phaseLabel}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2.5 shrink-0">
+                      <span className="text-sm font-mono font-bold text-orange-400 tabular-nums">
+                        {activeDownloadProgress.percent}%
+                      </span>
+                      <button
+                        type="button"
+                        onClick={cancelOfflinePackageDownload}
+                        className="px-3 py-1.5 rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-zinc-700 text-xs font-semibold text-zinc-200 hover:text-white cursor-pointer"
+                      >
+                        Annulla
+                      </button>
+                    </div>
+                  </div>
+                  <div className="w-full h-2 bg-zinc-900 rounded-full overflow-hidden">
+                    <div
+                      className="h-full bg-orange-500 transition-all duration-150"
+                      style={{ width: `${activeDownloadProgress.percent}%` }}
+                    />
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Sotto-barra Schede Pagina (Scaricate / Regioni & Zone Alpine / Seleziona Riquadro) */}
+            <div className="border-t border-zinc-800/80 bg-zinc-950/90">
+              <div className="max-w-7xl mx-auto w-full px-4 sm:px-6 lg:px-8 py-2.5 flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2 overflow-x-auto no-scrollbar">
+                  <button
+                    type="button"
+                    onClick={() => setOfflineManagerTab('downloaded')}
+                    className={`px-4 py-2 rounded-xl text-xs sm:text-sm font-bold transition-colors cursor-pointer whitespace-nowrap flex items-center gap-2 ${
+                      offlineManagerTab === 'downloaded'
+                        ? 'bg-zinc-800 text-white border border-zinc-700 shadow-sm'
+                        : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900'
+                    }`}
+                  >
+                    <CheckCircle2 size={15} className="text-emerald-400" />
+                    <span>Mappe Scaricate ({savedOfflinePackages.length})</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setOfflineManagerTab('regions')}
+                    className={`px-4 py-2 rounded-xl text-xs sm:text-sm font-bold transition-colors cursor-pointer whitespace-nowrap flex items-center gap-2 ${
+                      offlineManagerTab === 'regions'
+                        ? 'bg-zinc-800 text-white border border-zinc-700 shadow-sm'
+                        : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900'
+                    }`}
+                  >
+                    <Mountain size={15} className="text-orange-400" />
+                    <span>Regioni & Zone Alpine ({PREDEFINED_ALPINE_REGIONS.length})</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setOfflineManagerTab('custom')}
+                    className={`px-4 py-2 rounded-xl text-xs sm:text-sm font-bold transition-colors cursor-pointer whitespace-nowrap flex items-center gap-2 ${
+                      offlineManagerTab === 'custom'
+                        ? 'bg-zinc-800 text-white border border-zinc-700 shadow-sm'
+                        : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900'
+                    }`}
+                  >
+                    <Maximize2 size={15} className="text-sky-400" />
+                    <span>Riquadro Manuale su Mappa</span>
+                  </button>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setShowOfflineBoundsOnMap(prev => !prev)}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold border transition-colors cursor-pointer whitespace-nowrap ${
+                    showOfflineBoundsOnMap
+                      ? 'bg-emerald-950/40 border-emerald-500/40 text-emerald-300'
+                      : 'bg-zinc-900 border-zinc-800 text-zinc-400 hover:text-zinc-200'
+                  }`}
+                  title="Mostra o nascondi il perimetro verde delle aree scaricate sulla mappa"
+                >
+                  <span>Perimetro aree su mappa: {showOfflineBoundsOnMap ? 'ON' : 'OFF'}</span>
+                </button>
+              </div>
+            </div>
+          </header>
+
+          {/* Corpo Principale Scorrevole a Pagina Intera */}
+          <div className="flex-1 overflow-y-auto touch-scroll">
+            <div className="max-w-7xl mx-auto w-full px-4 sm:px-6 lg:px-8 py-6 pb-24 space-y-5">
+              {offlineManagerTab === 'downloaded' && (
+                <>
+                  {savedOfflinePackages.length === 0 ? (
+                    <div className="py-20 px-6 text-center border border-dashed border-zinc-800 rounded-3xl bg-zinc-900/30 max-w-2xl mx-auto my-6">
+                      <Download size={42} className="mx-auto mb-3.5 text-zinc-600" />
+                      <h3 className="text-base font-bold text-zinc-100 mb-1.5">
+                        Nessun pacchetto mappa scaricato
+                      </h3>
+                      <p className="text-xs sm:text-sm text-zinc-400 max-w-md mx-auto mb-6 leading-relaxed">
+                        Apri il catalogo delle Regioni e Zone Alpine per scaricare in pochi secondi la tua area in formato OSM Topografica, Satellite Puro o Ibrida + Sentieri CAI.
+                      </p>
+                      <div className="flex flex-wrap items-center justify-center gap-3">
+                        <button
+                          type="button"
+                          onClick={() => setOfflineManagerTab('regions')}
+                          className="px-5 py-2.5 bg-orange-600 hover:bg-orange-500 text-white rounded-xl text-xs sm:text-sm font-bold transition-colors cursor-pointer shadow-md"
+                        >
+                          Sfoglia Regioni & Zone Alpine
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setIsOfflineManagerOpen(false);
+                            setViewMode('map');
+                            setCustomAreaSelecting(true);
+                          }}
+                          className="px-5 py-2.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 border border-zinc-700 rounded-xl text-xs sm:text-sm font-bold transition-colors cursor-pointer"
+                        >
+                          Seleziona Riquadro su Mappa
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <>
+                      {/* Barra Filtro Rapido per Tipo di Mappa Scaricata */}
+                      <div className="bg-zinc-900/70 border border-zinc-800 rounded-2xl p-3.5 flex flex-wrap items-center justify-between gap-3">
+                        <span className="text-xs sm:text-sm font-medium text-zinc-300">
+                          Filtra le mappe scaricate per formato cartografico:
+                        </span>
+                        <div className="flex flex-wrap items-center gap-1.5 bg-zinc-950 p-1 rounded-xl border border-zinc-800">
+                          {([
+                            { id: 'all', label: `Tutte (${savedOfflinePackages.length})` },
+                            {
+                              id: 'standard',
+                              label: `OSM Topografica (${savedOfflinePackages.filter(p => p.mapStyle === 'standard').length})`,
+                            },
+                            {
+                              id: 'satellite',
+                              label: `Satellite Puro (${savedOfflinePackages.filter(p => p.mapStyle === 'satellite').length})`,
+                            },
+                            {
+                              id: 'hybrid',
+                              label: `Ibrida + Sentieri (${savedOfflinePackages.filter(p => p.mapStyle === 'hybrid').length})`,
+                            },
+                          ] as const).map(f => (
+                            <button
+                              key={f.id}
+                              type="button"
+                              onClick={() => setDownloadedTypeFilter(f.id)}
+                              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer whitespace-nowrap ${
+                                downloadedTypeFilter === f.id
+                                  ? 'bg-zinc-800 text-white border border-zinc-700'
+                                  : 'text-zinc-400 hover:text-zinc-200'
+                              }`}
+                            >
+                              {f.label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+                        {savedOfflinePackages
+                          .filter(p => downloadedTypeFilter === 'all' || p.mapStyle === downloadedTypeFilter)
+                          .map(pkg => {
+                            const sizeMB = (pkg.sizeBytes / (1024 * 1024)).toFixed(1);
+                            const dateStr = new Date(pkg.downloadedAt).toLocaleDateString('it-IT', {
+                              day: '2-digit',
+                              month: 'short',
+                              year: 'numeric',
+                            });
+                            const styleMeta = getOfflineMapStyleMeta(pkg.mapStyle);
+                            const baseRegId = pkg.baseRegionId || pkg.id.split('__')[0];
+                            const otherStyles = (['standard', 'satellite', 'hybrid'] as const).filter(
+                              s => s !== pkg.mapStyle
+                            );
+
+                            return (
+                              <div
+                                key={pkg.id}
+                                className="bg-zinc-900 border border-zinc-800 hover:border-zinc-700 rounded-2xl p-4 flex flex-col justify-between gap-3.5 transition-colors"
+                              >
+                                <div>
+                                  {/* Intestazione esplicita del Tipo di Mappa Scaricata */}
+                                  <div
+                                    className={`mb-3 px-3 py-2.5 rounded-xl border ${styleMeta.accentBg} ${styleMeta.accentBorder} flex items-center justify-between gap-2`}
+                                  >
+                                    <div className="min-w-0">
+                                      <div className={`text-[11px] font-bold tracking-wide ${styleMeta.accentText}`}>
+                                        {styleMeta.badgeTitle}
+                                      </div>
+                                      <div className="text-xs text-zinc-200 font-medium truncate">
+                                        {styleMeta.fullLabel}
+                                      </div>
+                                    </div>
+                                    <span className="text-xs font-mono font-bold text-white shrink-0 tabular-nums bg-zinc-950/60 px-2 py-1 rounded-lg border border-zinc-800">
+                                      {sizeMB} MB
+                                    </span>
+                                  </div>
+
+                                  <div className="text-[11px] text-zinc-400 mb-0.5">
+                                    {pkg.isCustomArea ? 'Riquadro Manuale Personalizzato' : `Zona Alpina · ${pkg.regionGroup}`}
+                                  </div>
+                                  <h4 className="text-base font-bold text-white leading-snug mb-1">
+                                    {pkg.name}
+                                  </h4>
+                                  <p className="text-xs text-zinc-400 mb-3">{pkg.subtitle}</p>
+
+                                  {/* Dettaglio strati inclusi nel pacchetto */}
+                                  <div className="bg-zinc-950/80 border border-zinc-800/80 rounded-xl p-3 mb-3 space-y-1 text-[11px] text-zinc-300">
+                                    <div className="text-zinc-300 font-medium">{styleMeta.layersSummary}</div>
+                                    <div className="flex flex-wrap items-center gap-1.5 text-zinc-400 font-mono tabular-nums pt-0.5">
+                                      <span>Area ~{pkg.areaKm2} km²</span>
+                                      <span>·</span>
+                                      <span>Z{pkg.minZoom}–Z{pkg.maxNativeZoom} (+Z19)</span>
+                                      <span>·</span>
+                                      <span>{pkg.tileCount} tile</span>
+                                      <span>·</span>
+                                      <span>{pkg.poiCount} POI</span>
+                                      <span>·</span>
+                                      <span>{dateStr}</span>
+                                    </div>
+                                  </div>
+
+                                  {/* Azione rapida per aggiungere anche gli altri stili mappa per la stessa zona */}
+                                  <div className="flex flex-wrap items-center gap-2 pt-0.5">
+                                    <span className="text-[11px] text-zinc-500">Altri formati:</span>
+                                    {otherStyles.map(otherSt => {
+                                      const otherMeta = getOfflineMapStyleMeta(otherSt);
+                                      const otherPkgId = buildRegionPackageId(baseRegId, otherSt);
+                                      const alreadyHasOther = savedOfflinePackages.some(
+                                        item => item.id === otherPkgId
+                                      );
+                                      return alreadyHasOther ? (
+                                        <span
+                                          key={otherSt}
+                                          className="text-[11px] text-emerald-400 font-medium"
+                                        >
+                                          ✓ {otherMeta.shortLabel}
+                                        </span>
+                                      ) : (
+                                        <button
+                                          key={otherSt}
+                                          type="button"
+                                          disabled={isOffline || isDownloading}
+                                          onClick={() =>
+                                            startOfflinePackageDownload({
+                                              id: otherPkgId,
+                                              baseRegionId: baseRegId,
+                                              name: pkg.name,
+                                              subtitle: pkg.subtitle,
+                                              regionGroup: pkg.regionGroup,
+                                              bounds: pkg.bounds,
+                                              style: otherSt,
+                                              isCustomArea: pkg.isCustomArea,
+                                            })
+                                          }
+                                          className="text-[11px] font-semibold text-orange-400 hover:text-orange-300 underline underline-offset-2 disabled:opacity-40 cursor-pointer"
+                                        >
+                                          + Scarica {otherMeta.shortLabel}
+                                        </button>
+                                      );
+                                    })}
+                                  </div>
+                                </div>
+
+                                <div className="flex items-center gap-2 pt-2.5 border-t border-zinc-800/80">
+                                  <button
+                                    type="button"
+                                    onClick={() => focusOfflinePackageOnMap(pkg)}
+                                    className="flex-1 py-2.5 px-3 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+                                  >
+                                    <MapIcon size={14} /> Apri ({styleMeta.shortLabel})
+                                  </button>
+                                  <button
+                                    type="button"
+                                    disabled={isOffline || isDownloading}
+                                    onClick={() =>
+                                      startOfflinePackageDownload({
+                                        id: pkg.id,
+                                        baseRegionId: baseRegId,
+                                        name: pkg.name,
+                                        subtitle: pkg.subtitle,
+                                        regionGroup: pkg.regionGroup,
+                                        bounds: pkg.bounds,
+                                        style: pkg.mapStyle,
+                                        isCustomArea: pkg.isCustomArea,
+                                      })
+                                    }
+                                    className="py-2.5 px-3 bg-zinc-800 hover:bg-zinc-700 disabled:opacity-40 text-zinc-200 rounded-xl text-xs font-semibold transition-colors cursor-pointer"
+                                    title="Aggiorna tasselli e POI di questo pacchetto"
+                                  >
+                                    <RefreshCw size={14} />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleDeleteOfflinePackage(pkg)}
+                                    className="py-2.5 px-3 bg-zinc-800 hover:bg-red-950/60 text-zinc-400 hover:text-red-400 rounded-xl text-xs font-semibold transition-colors cursor-pointer"
+                                    title="Elimina questo pacchetto offline"
+                                  >
+                                    <Trash2 size={14} />
+                                  </button>
+                                </div>
+                              </div>
+                            );
+                          })}
+                      </div>
+                    </>
+                  )}
+                </>
+              )}
+
+              {offlineManagerTab === 'regions' && (
+                <div className="space-y-5">
+                  {/* Barra Filtri per Macro-Zona Alpina & Ricerca Valli/Gruppi */}
+                  <div className="bg-zinc-900/80 border border-zinc-800 rounded-2xl p-4 space-y-3">
+                    <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3">
+                      <div className="relative flex-1">
+                        <Search className="w-4 h-4 text-zinc-500 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                        <input
+                          type="text"
+                          value={regionSearchFilter}
+                          onChange={(e) => setRegionSearchFilter(e.target.value)}
+                          placeholder="Cerca zona, gruppo montuoso o cima (es. Tofane, Brenta, Lagorai, Pasubio, Ortles)..."
+                          className="w-full h-11 bg-zinc-950 border border-zinc-800 rounded-xl pl-10 pr-9 text-xs sm:text-sm text-zinc-100 placeholder:text-zinc-500 focus:border-orange-500 outline-none"
+                        />
+                        {regionSearchFilter && (
+                          <button
+                            type="button"
+                            onClick={() => setRegionSearchFilter('')}
+                            className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-white cursor-pointer"
+                          >
+                            <X size={15} />
+                          </button>
+                        )}
+                      </div>
+
+                      <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar">
+                        {(
+                          [
+                            'Tutte',
+                            'Dolomiti & Veneto',
+                            'Trentino & Alto Adige',
+                            'Friuli & Est',
+                            'Lombardia & Ovest',
+                          ] as AlpineMacroZone[]
+                        ).map(zone => (
+                          <button
+                            key={zone}
+                            type="button"
+                            onClick={() => setSelectedMacroZone(zone)}
+                            className={`px-3.5 py-2 rounded-xl text-xs font-bold transition-colors cursor-pointer whitespace-nowrap ${
+                              selectedMacroZone === zone
+                                ? 'bg-orange-600 text-white'
+                                : 'bg-zinc-950 text-zinc-400 hover:text-zinc-200 border border-zinc-800'
+                            }`}
+                          >
+                            {zone}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Griglia a Pagina Intera (fino a 3 colonne su Desktop) per le Regioni e Zone Alpine */}
+                  <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+                    {PREDEFINED_ALPINE_REGIONS.filter(reg => {
+                      const matchesZone =
+                        selectedMacroZone === 'Tutte' || reg.macroZone === selectedMacroZone;
+                      const q = regionSearchFilter.trim().toLowerCase();
+                      const matchesQuery =
+                        !q ||
+                        reg.name.toLowerCase().includes(q) ||
+                        reg.subtitle.toLowerCase().includes(q) ||
+                        reg.regionGroup.toLowerCase().includes(q) ||
+                        reg.maxPeakName.toLowerCase().includes(q);
+                      return matchesZone && matchesQuery;
+                    }).map((region: PredefinedAlpineRegion) => {
+                      const areaKm2 = estimateOfflinePackageStats(region.bounds, 'standard').areaKm2;
+                      const regionPackages = savedOfflinePackages.filter(
+                        p => p.baseRegionId === region.id || p.id === region.id || p.id.startsWith(`${region.id}__`)
+                      );
+
+                      return (
+                        <div
+                          key={region.id}
+                          className={`bg-zinc-900 border rounded-2xl p-4 flex flex-col justify-between gap-3.5 transition-colors ${
+                            regionPackages.length > 0
+                              ? 'border-emerald-500/40'
+                              : 'border-zinc-800 hover:border-zinc-700'
+                          }`}
+                        >
+                          <div>
+                            <div className="flex items-start justify-between gap-2 mb-1">
+                              <div>
+                                <div className="text-[11px] text-zinc-400 mb-0.5">
+                                  {region.regionGroup} · {region.maxPeakName} ({region.maxPeakElevation}m)
+                                </div>
+                                <h4 className="text-base font-bold text-white leading-snug">
+                                  {region.name}
+                                </h4>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setIsOfflineManagerOpen(false);
+                                  setViewMode('map');
+                                  setTimeout(() => {
+                                    if (!mapRef.current) return;
+                                    mapRef.current.fitBounds(
+                                      [
+                                        [region.bounds.south, region.bounds.west],
+                                        [region.bounds.north, region.bounds.east],
+                                      ],
+                                      { padding: [40, 40], maxZoom: 13 }
+                                    );
+                                    showToast(`Inquadrata zona: ${region.name}`);
+                                  }, 80);
+                                }}
+                                className="px-2.5 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-[11px] font-semibold text-zinc-300 hover:text-white shrink-0 cursor-pointer flex items-center gap-1"
+                                title="Visualizza quest'area sulla mappa"
+                              >
+                                <MapIcon size={12} className="text-orange-400" /> Vedi
+                              </button>
+                            </div>
+
+                            <p className="text-xs text-zinc-400 mb-2">{region.subtitle}</p>
+                            <div className="text-[11px] text-zinc-500 font-mono tabular-nums mb-3">
+                              Area ~{areaKm2} km² · Include Bivacchi/POI + Quote DEM + Sentieri CAI
+                            </div>
+
+                            {/* Matrice chiara dei 3 Tipi di Mappa disponibili per questa Regione */}
+                            <div className="space-y-2 pt-2.5 border-t border-zinc-800/80">
+                              <div className="text-[11px] font-semibold text-zinc-300">
+                                Scegli il tipo di mappa da scaricare:
+                              </div>
+
+                              {(['standard', 'satellite', 'hybrid'] as const).map(styleKey => {
+                                const stMeta = getOfflineMapStyleMeta(styleKey);
+                                const stEst = estimateOfflinePackageStats(region.bounds, styleKey);
+                                const pkgId = buildRegionPackageId(region.id, styleKey);
+                                const savedForStyle = savedOfflinePackages.find(
+                                  p =>
+                                    p.id === pkgId ||
+                                    (p.id === region.id && p.mapStyle === styleKey)
+                                );
+                                const isDownloadingThis =
+                                  activeDownloadProgress?.packageId === pkgId ||
+                                  (activeDownloadProgress?.packageId === region.id &&
+                                    activeDownloadProgress?.mapStyle === styleKey);
+
+                                return (
+                                  <div
+                                    key={styleKey}
+                                    className={`rounded-xl border p-2.5 flex items-center justify-between gap-2 transition-colors ${
+                                      savedForStyle
+                                        ? 'bg-emerald-950/25 border-emerald-500/40'
+                                        : 'bg-zinc-950/80 border-zinc-800'
+                                    }`}
+                                  >
+                                    <div className="min-w-0">
+                                      <div className="flex items-center gap-1.5 flex-wrap">
+                                        <span className={`text-xs font-bold ${stMeta.accentText}`}>
+                                          {stMeta.shortLabel}
+                                        </span>
+                                        <span className="text-[11px] font-mono text-zinc-400 tabular-nums">
+                                          · ~{stEst.sizeMB} MB ({stEst.tileCount} tile)
+                                        </span>
+                                      </div>
+                                      <div className="text-[10px] text-zinc-400 truncate">
+                                        {styleKey === 'standard'
+                                          ? 'Topografica OSM + Curve di livello + Sentieri'
+                                          : styleKey === 'satellite'
+                                          ? 'Ortofoto Satellitare pura + Toponimi vette'
+                                          : 'Ortofoto Satellitare + Tracciati Sentieri CAI'}
+                                      </div>
+                                    </div>
+
+                                    <div className="flex items-center gap-1.5 shrink-0">
+                                      {savedForStyle ? (
+                                        <>
+                                          <button
+                                            type="button"
+                                            onClick={() => focusOfflinePackageOnMap(savedForStyle)}
+                                            className="px-2.5 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-[11px] font-bold flex items-center gap-1 cursor-pointer whitespace-nowrap"
+                                            title="Apri questa mappa sulla vista principale"
+                                          >
+                                            <CheckCircle2 size={12} /> Apri
+                                          </button>
+                                          <button
+                                            type="button"
+                                            onClick={() => handleDeleteOfflinePackage(savedForStyle)}
+                                            className="p-1.5 bg-zinc-900 hover:bg-red-950/60 text-zinc-400 hover:text-red-400 rounded-lg border border-zinc-800 cursor-pointer"
+                                            title="Rimuovi questo formato"
+                                          >
+                                            <Trash2 size={12} />
+                                          </button>
+                                        </>
+                                      ) : (
+                                        <button
+                                          type="button"
+                                          disabled={isOffline || isDownloading}
+                                          onClick={() =>
+                                            startOfflinePackageDownload({
+                                              id: pkgId,
+                                              baseRegionId: region.id,
+                                              name: region.name,
+                                              subtitle: region.subtitle,
+                                              regionGroup: region.regionGroup,
+                                              bounds: region.bounds,
+                                              style: styleKey,
+                                              isCustomArea: false,
+                                            })
+                                          }
+                                          className="px-3 py-1.5 bg-zinc-800 hover:bg-orange-600 disabled:opacity-40 text-zinc-100 hover:text-white border border-zinc-700 hover:border-orange-500 rounded-lg text-[11px] font-bold flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap"
+                                        >
+                                          {isDownloadingThis ? (
+                                            <>
+                                              <Loader2 size={12} className="animate-spin text-orange-400" />
+                                              <span>{activeDownloadProgress?.percent}%</span>
+                                            </>
+                                          ) : (
+                                            <>
+                                              <Download size={12} />
+                                              <span>Scarica</span>
+                                            </>
+                                          )}
+                                        </button>
+                                      )}
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {offlineManagerTab === 'custom' && (
+                <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-6 max-w-3xl mx-auto space-y-5">
+                  <div>
+                    <h3 className="text-base font-bold text-white mb-1">
+                      Selettore Riquadro su Mappa (Stile OsmAnd / Komoot)
+                    </h3>
+                    <p className="text-xs sm:text-sm text-zinc-400 leading-relaxed">
+                      Inquadra liberamente sulla mappa qualsiasi valle, parco naturale o gruppo montuoso. Il pacchetto includerà automaticamente i tasselli cartografici multi-zoom, tutti i Bivacchi, Rifugi e Fontane dell'area, le quote DEM e il grafo dei sentieri CAI per il calcolo itinerari offline.
+                    </p>
+                  </div>
+
+                  {(() => {
+                    const est = estimateOfflinePackageStats(currentViewportBounds, offlineDownloadStyle);
+                    return (
+                      <div className="bg-zinc-950 border border-zinc-800 rounded-xl p-4 grid grid-cols-2 sm:grid-cols-4 gap-3 text-center">
+                        <div>
+                          <div className="text-[11px] text-zinc-500">Estensione</div>
+                          <div className="text-sm font-mono font-bold text-white tabular-nums">
+                            ~{est.areaKm2} km²
+                          </div>
+                        </div>
+                        <div>
+                          <div className="text-[11px] text-zinc-500">Tasselli Mappa</div>
+                          <div className="text-sm font-mono font-bold text-orange-400 tabular-nums">
+                            {est.tileCount} tile
+                          </div>
+                        </div>
+                        <div>
+                          <div className="text-[11px] text-zinc-500">Livelli Zoom</div>
+                          <div className="text-sm font-mono font-bold text-sky-400 tabular-nums">
+                            Z{est.minZoom}–Z{est.maxNativeZoom} (+Z19)
+                          </div>
+                        </div>
+                        <div>
+                          <div className="text-[11px] text-zinc-500">Peso Stimato</div>
+                          <div className="text-sm font-mono font-bold text-emerald-400 tabular-nums">
+                            ~{est.sizeMB} MB
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })()}
+
+                  <div className="space-y-2">
+                    <label className="block text-xs font-semibold text-zinc-300">
+                      Nome personalizzato per l'area (opzionale)
+                    </label>
+                    <input
+                      type="text"
+                      value={customAreaNameDraft}
+                      onChange={(e) => setCustomAreaNameDraft(e.target.value)}
+                      placeholder="Es. Escursione Pale di San Martino / Val Canali"
+                      className="w-full h-11 bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 text-xs sm:text-sm text-zinc-100 placeholder:text-zinc-500 focus:border-orange-500 outline-none"
+                    />
+                  </div>
+
+                  <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 pt-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsOfflineManagerOpen(false);
+                        setViewMode('map');
+                        setCustomAreaSelecting(true);
+                      }}
+                      className="flex-1 py-3 px-4 bg-zinc-800 hover:bg-zinc-700 text-white border border-zinc-700 rounded-xl text-xs sm:text-sm font-bold flex items-center justify-center gap-2 transition-colors cursor-pointer"
+                    >
+                      <Maximize2 size={15} className="text-orange-400" />
+                      Posiziona Mirino sulla Mappa
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isOffline || isDownloading}
+                      onClick={downloadMapArea}
+                      className="flex-1 py-3 px-4 bg-orange-600 hover:bg-orange-500 disabled:opacity-40 text-white rounded-xl text-xs sm:text-sm font-bold flex items-center justify-center gap-2 transition-colors cursor-pointer shadow-lg"
+                    >
+                      <Download size={15} />
+                      Scarica Subito Inquadratura Attuale
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Hidden File Input for Full Backup JSON Import */}
+      <input
+        type="file"
+        ref={backupFileInputRef}
+        accept=".json,application/json"
+        className="hidden"
+        onChange={handleImportFullBackupJson}
+      />
+
+      {/* --- [MODULAR FEATURE 6] PAGINA INTERA DEDICATA "IMPOSTAZIONI UTENTE & CONFIGURAZIONE APP" --- */}
+      {isSettingsOpen && (() => {
+        const refCoords = userLocation || mapViewState.current.center;
+        const coordSourceLabel: 'GPS' | 'Centro Mappa' = userLocation ? 'GPS' : 'Centro Mappa';
+        const dmsCoords = formatCoordinatesDms(refCoords.lat, refCoords.lng);
+
+        // Trova il Bivacco o Rifugio più vicino per il modulo SOS 112
+        const shelters = allPois.filter(
+          p => p.type === POIType.BIVOUAC || p.type === POIType.REFUGE
+        );
+        let nearestShelterInfo: {
+          name: string;
+          type: string;
+          distanceKm: number;
+          altitude: number;
+          bearingCardinal: string;
+        } | null = null;
+        if (shelters.length > 0) {
+          let bestPoi = shelters[0];
+          let bestDist = getDistance(
+            refCoords.lat,
+            refCoords.lng,
+            bestPoi.coordinates.lat,
+            bestPoi.coordinates.lng
+          );
+          for (let i = 1; i < shelters.length; i++) {
+            const d = getDistance(
+              refCoords.lat,
+              refCoords.lng,
+              shelters[i].coordinates.lat,
+              shelters[i].coordinates.lng
+            );
+            if (d < bestDist) {
+              bestDist = d;
+              bestPoi = shelters[i];
+            }
+          }
+          const brg = computeBearing(
+            refCoords.lat,
+            refCoords.lng,
+            bestPoi.coordinates.lat,
+            bestPoi.coordinates.lng
+          );
+          nearestShelterInfo = {
+            name: bestPoi.name,
+            type: bestPoi.type,
+            distanceKm: bestDist,
+            altitude: bestPoi.altitude || 0,
+            bearingCardinal: `${brg.deg}° ${brg.cardinal}`,
+          };
+        }
+
+        const totalWeightKg = (userSettings.bodyWeightKg || 75) + (userSettings.backpackWeightKg || 8);
+        const approxKcalPerHourAscent = Math.round(totalWeightKg * 6.2);
+
+        return (
+          <div className="fixed inset-0 z-[7600] bg-zinc-950 flex flex-col animate-in fade-in duration-200">
+            {/* Sticky Full-Page Header */}
+            <div className="px-4 sm:px-6 py-3.5 border-b border-zinc-800 bg-zinc-950/95 backdrop-blur flex items-center justify-between gap-3 shrink-0">
+              <div className="flex items-center gap-3 min-w-0">
+                <button
+                  type="button"
+                  onClick={() => setIsSettingsOpen(false)}
+                  className="p-2 rounded-xl bg-zinc-900 hover:bg-zinc-800 text-zinc-200 hover:text-white border border-zinc-800 transition-colors cursor-pointer shrink-0"
+                  title="Torna alla Mappa"
+                >
+                  <ChevronLeft size={20} />
+                </button>
+                <div className="w-10 h-10 rounded-xl bg-orange-500/15 border border-orange-500/30 flex items-center justify-center text-orange-400 shrink-0">
+                  <Settings size={20} />
+                </div>
+                <div className="min-w-0">
+                  <h2 className="text-base sm:text-lg font-bold text-white leading-tight truncate">
+                    Impostazioni Utente & Configurazione App
+                  </h2>
+                  <p className="text-xs text-zinc-400 truncate">
+                    Profilo Passo CAI, Emergenza SOS 112, Modalità Offline Forzata e Backup Completo JSON
+                  </p>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setIsSettingsOpen(false)}
+                className="px-3.5 py-2 rounded-xl bg-zinc-900 hover:bg-zinc-800 text-zinc-200 hover:text-white border border-zinc-800 text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer shrink-0"
+              >
+                <MapIcon size={14} className="text-orange-400" />
+                <span>Torna alla Mappa</span>
+              </button>
+            </div>
+
+            {/* Body Scrollable a Pagina Intera */}
+            <div className="flex-1 overflow-y-auto p-4 sm:p-6">
+              <div className="max-w-5xl mx-auto grid grid-cols-1 lg:grid-cols-2 gap-5 pb-12">
+                {/* 1. MODULO EMERGENZA SOS 112 CON QUOTA E POSIZIONE ESATTA */}
+                <section className="bg-zinc-900 border border-red-500/40 rounded-2xl p-5 space-y-4 shadow-xl">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-10 h-10 rounded-xl bg-red-500/15 border border-red-500/40 flex items-center justify-center text-red-400 shrink-0">
+                        <ShieldAlert size={20} />
+                      </div>
+                      <div>
+                        <h3 className="text-sm sm:text-base font-bold text-white flex items-center gap-2">
+                          <span>Strumento Rapido Coordinate SOS 112</span>
+                          <span className="px-2 py-0.5 rounded bg-red-500/20 text-red-300 border border-red-500/40 text-[10px] font-mono uppercase">
+                            Soccorso Alpino
+                          </span>
+                        </h3>
+                        <p className="text-xs text-zinc-400">
+                          Posizione attiva ({coordSourceLabel}): pronta da dettare o copiare per il 112
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Riquadro Coordinate DD + DMS + Quota */}
+                  <div className="bg-zinc-950 border border-zinc-800 rounded-xl p-3.5 space-y-2.5">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                      <div className="bg-zinc-900/90 border border-zinc-800 rounded-lg p-2.5">
+                        <div className="text-[10px] font-bold uppercase text-zinc-500">
+                          Gradi Decimali (WGS84 DD)
+                        </div>
+                        <div className="text-xs sm:text-sm font-mono font-bold text-white mt-0.5 select-all">
+                          {refCoords.lat.toFixed(6)}°N, {refCoords.lng.toFixed(6)}°E
+                        </div>
+                      </div>
+                      <div className="bg-zinc-900/90 border border-zinc-800 rounded-lg p-2.5">
+                        <div className="text-[10px] font-bold uppercase text-zinc-500">
+                          Gradi Minuti Secondi (DMS Elicottero)
+                        </div>
+                        <div className="text-xs sm:text-sm font-mono font-bold text-orange-400 mt-0.5 select-all">
+                          {dmsCoords.combined}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2.5 pt-1">
+                      <div className="bg-zinc-900/70 border border-zinc-800/80 rounded-lg p-2.5 flex items-center justify-between">
+                        <div>
+                          <div className="text-[10px] font-bold uppercase text-zinc-500">Quota Altimetrica</div>
+                          <div className="text-sm font-mono font-bold text-emerald-400">
+                            {isResolvingSosAltitude
+                              ? 'Rilevamento...'
+                              : sosResolvedAltitude !== null
+                              ? `${sosResolvedAltitude} m s.l.m.`
+                              : 'N/D'}
+                          </div>
+                        </div>
+                        <Mountain size={18} className="text-emerald-500/60 shrink-0" />
+                      </div>
+
+                      <div className="bg-zinc-900/70 border border-zinc-800/80 rounded-lg p-2.5">
+                        <div className="text-[10px] font-bold uppercase text-zinc-500">Punto d'Appoggio Vicino</div>
+                        {nearestShelterInfo ? (
+                          <div className="text-xs font-bold text-zinc-200 truncate" title={nearestShelterInfo.name}>
+                            {nearestShelterInfo.name}{' '}
+                            <span className="font-mono text-orange-400">
+                              ({nearestShelterInfo.distanceKm.toFixed(2)} km · {nearestShelterInfo.bearingCardinal})
+                            </span>
+                          </div>
+                        ) : (
+                          <div className="text-xs text-zinc-500">Nessun ricovero in memoria</div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Contatto ICE (In Case of Emergency) */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                    <div>
+                      <label className="block text-[11px] font-semibold text-zinc-400 mb-1">
+                        Nome Contatto Emergenza (ICE)
+                      </label>
+                      <input
+                        type="text"
+                        value={userSettings.iceContactName}
+                        onChange={e => updateUserSettings({ iceContactName: e.target.value })}
+                        placeholder="Es. Mario Rossi (Familiare)"
+                        className="w-full h-9 bg-zinc-950 border border-zinc-800 rounded-lg px-3 text-xs text-zinc-100 placeholder:text-zinc-600 focus:border-red-500 outline-none"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-semibold text-zinc-400 mb-1">
+                        Telefono Contatto ICE
+                      </label>
+                      <input
+                        type="tel"
+                        value={userSettings.iceContactPhone}
+                        onChange={e => updateUserSettings({ iceContactPhone: e.target.value })}
+                        placeholder="Es. +39 333 1234567"
+                        className="w-full h-9 bg-zinc-950 border border-zinc-800 rounded-lg px-3 text-xs font-mono text-zinc-100 placeholder:text-zinc-600 focus:border-red-500 outline-none"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Azioni Rapide SOS */}
+                  <div className="flex flex-col sm:flex-row gap-2.5 pt-1">
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        const report = buildSosEmergencyReport({
+                          lat: refCoords.lat,
+                          lng: refCoords.lng,
+                          altitude: sosResolvedAltitude,
+                          sourceLabel: coordSourceLabel,
+                          nearestShelter: nearestShelterInfo,
+                          settings: userSettings,
+                        });
+                        try {
+                          await navigator.clipboard.writeText(report);
+                          showToast(' Scheda coordinate SOS 112 copiata negli appunti!');
+                        } catch {
+                          showToast('Coordinate: ' + dmsCoords.combined);
+                        }
+                      }}
+                      className="flex-1 py-2.5 px-4 bg-red-600 hover:bg-red-500 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-2 transition-colors shadow-lg cursor-pointer"
+                    >
+                      <Copy size={15} />
+                      <span>Copia Scheda Completa SOS 112</span>
+                    </button>
+                    <a
+                      href="tel:112"
+                      className="py-2.5 px-4 bg-zinc-950 hover:bg-zinc-800 text-red-300 border border-red-500/50 rounded-xl text-xs font-bold flex items-center justify-center gap-2 transition-colors cursor-pointer"
+                    >
+                      <PhoneCall size={15} />
+                      <span>Chiama 112</span>
+                    </a>
+                  </div>
+                </section>
+
+                {/* 2. PROFILO PASSO CAI & PARAMETRI FISICI (PESO E ZAINO) */}
+                <section className="bg-zinc-900 border border-zinc-800 rounded-2xl p-5 space-y-4 shadow-xl">
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-10 h-10 rounded-xl bg-orange-500/15 border border-orange-500/30 flex items-center justify-center text-orange-400 shrink-0">
+                      <User size={20} />
+                    </div>
+                    <div>
+                      <h3 className="text-sm sm:text-base font-bold text-white">
+                        Profilo Passo CAI & Parametri Fisici
+                      </h3>
+                      <p className="text-xs text-zinc-400">
+                        Calibra i tempi di percorrenza (Formula Munter/CAI) per tracce GPX, Target Lock e Tour
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Selettore Preset Passo */}
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                    {(['relaxed', 'standard', 'fast', 'trail_running'] as UserPacePreset[]).map(presetKey => {
+                      const cfg = PACE_PRESET_CONFIGS[presetKey];
+                      const isSelected = userSettings.pacePreset === presetKey;
+                      return (
+                        <button
+                          key={presetKey}
+                          type="button"
+                          onClick={() => applyPacePreset(presetKey)}
+                          className={`p-2.5 rounded-xl border text-left transition-all cursor-pointer ${
+                            isSelected
+                              ? 'bg-orange-600/20 border-orange-500 text-white shadow'
+                              : 'bg-zinc-950 border-zinc-800 text-zinc-400 hover:border-zinc-700 hover:text-zinc-200'
+                          }`}
+                        >
+                          <div className="text-xs font-bold truncate">{cfg.label}</div>
+                          <div className="text-[10px] font-mono text-orange-400 mt-0.5">
+                            {cfg.horizSpeedKmh}km/h · +{cfg.ascentSpeedMh}m/h
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  {/* Slider Velocità Orizzontale, Salita e Discesa */}
+                  <div className="bg-zinc-950 border border-zinc-800 rounded-xl p-3.5 space-y-3">
+                    <div>
+                      <div className="flex justify-between text-xs mb-1">
+                        <span className="text-zinc-400 font-medium">Velocità Orizzontale su Sentiero</span>
+                        <span className="font-mono font-bold text-orange-400">
+                          {userSettings.horizSpeedKmh.toFixed(1)} km/h
+                        </span>
+                      </div>
+                      <input
+                        type="range"
+                        min="2.0"
+                        max="8.0"
+                        step="0.5"
+                        value={userSettings.horizSpeedKmh}
+                        onChange={e =>
+                          updateUserSettings({
+                            pacePreset: 'custom',
+                            horizSpeedKmh: parseFloat(e.target.value),
+                          })
+                        }
+                        className="w-full h-1.5 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-orange-500"
+                      />
+                    </div>
+
+                    <div>
+                      <div className="flex justify-between text-xs mb-1">
+                        <span className="text-zinc-400 font-medium">Velocità Verticale Salita (VAM)</span>
+                        <span className="font-mono font-bold text-emerald-400">
+                          +{userSettings.ascentSpeedMh} m/h
+                        </span>
+                      </div>
+                      <input
+                        type="range"
+                        min="200"
+                        max="900"
+                        step="25"
+                        value={userSettings.ascentSpeedMh}
+                        onChange={e =>
+                          updateUserSettings({
+                            pacePreset: 'custom',
+                            ascentSpeedMh: parseInt(e.target.value, 10),
+                          })
+                        }
+                        className="w-full h-1.5 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-emerald-500"
+                      />
+                    </div>
+
+                    <div>
+                      <div className="flex justify-between text-xs mb-1">
+                        <span className="text-zinc-400 font-medium">Velocità Verticale Discesa</span>
+                        <span className="font-mono font-bold text-sky-400">
+                          -{userSettings.descentSpeedMh} m/h
+                        </span>
+                      </div>
+                      <input
+                        type="range"
+                        min="300"
+                        max="1000"
+                        step="50"
+                        value={userSettings.descentSpeedMh}
+                        onChange={e =>
+                          updateUserSettings({
+                            pacePreset: 'custom',
+                            descentSpeedMh: parseInt(e.target.value, 10),
+                          })
+                        }
+                        className="w-full h-1.5 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-sky-500"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Peso Corporeo & Peso Zaino */}
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
+                    <div className="bg-zinc-950 border border-zinc-800 rounded-xl p-3">
+                      <label className="block text-[10px] font-bold uppercase text-zinc-500 mb-1">
+                        Peso Corporeo (kg)
+                      </label>
+                      <input
+                        type="number"
+                        min={35}
+                        max={160}
+                        value={userSettings.bodyWeightKg}
+                        onChange={e =>
+                          updateUserSettings({
+                            bodyWeightKg: Math.max(35, Math.min(160, Number(e.target.value) || 75)),
+                          })
+                        }
+                        className="w-full bg-zinc-900 border border-zinc-700 rounded-lg px-2.5 py-1.5 text-sm font-mono font-bold text-white outline-none focus:border-orange-500"
+                      />
+                    </div>
+
+                    <div className="bg-zinc-950 border border-zinc-800 rounded-xl p-3">
+                      <label className="block text-[10px] font-bold uppercase text-zinc-500 mb-1">
+                        Peso Zaino (kg)
+                      </label>
+                      <input
+                        type="number"
+                        min={0}
+                        max={45}
+                        value={userSettings.backpackWeightKg}
+                        onChange={e =>
+                          updateUserSettings({
+                            backpackWeightKg: Math.max(0, Math.min(45, Number(e.target.value) || 0)),
+                          })
+                        }
+                        className="w-full bg-zinc-900 border border-zinc-700 rounded-lg px-2.5 py-1.5 text-sm font-mono font-bold text-orange-400 outline-none focus:border-orange-500"
+                      />
+                    </div>
+
+                    <div className="col-span-2 sm:col-span-1 bg-zinc-950 border border-zinc-800 rounded-xl p-3 flex flex-col justify-center">
+                      <div className="text-[10px] font-bold uppercase text-zinc-500">Dispendio Stimato</div>
+                      <div className="text-sm font-mono font-bold text-emerald-400 mt-0.5">
+                        ~{approxKcalPerHourAscent} kcal/h
+                      </div>
+                      <div className="text-[10px] text-zinc-500">
+                        Carico tot: {totalWeightKg} kg
+                      </div>
+                    </div>
+                  </div>
+                </section>
+
+                {/* 3. MODALITÀ OFFLINE FORZATA & BACKUP COMPLETO JSON */}
+                <section className="bg-zinc-900 border border-zinc-800 rounded-2xl p-5 space-y-4 shadow-xl">
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-10 h-10 rounded-xl bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-amber-400 shrink-0">
+                      <BatteryCharging size={20} />
+                    </div>
+                    <div>
+                      <h3 className="text-sm sm:text-base font-bold text-white">
+                        Modalità Offline Forzata & Backup Dati JSON
+                      </h3>
+                      <p className="text-xs text-zinc-400">
+                        Risparmia batteria in alta quota ed esporta/ripristina tutti i tuoi dati in un file .JSON
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Toggle Modalità Offline Forzata */}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const next = !userSettings.forceOfflineMode;
+                      updateUserSettings({ forceOfflineMode: next });
+                      showToast(
+                        next
+                          ? 'Modalità Offline Forzata ATTIVA (0 richieste di rete)'
+                          : 'Modalità Offline Forzata disattivata (Rete automatica)'
+                      );
+                    }}
+                    className={`w-full p-3.5 rounded-xl border text-left flex items-center justify-between gap-3 transition-all cursor-pointer ${
+                      userSettings.forceOfflineMode
+                        ? 'bg-amber-950/40 border-amber-500/60 text-white'
+                        : 'bg-zinc-950 border-zinc-800 text-zinc-300 hover:border-zinc-700'
+                    }`}
+                  >
+                    <div className="space-y-0.5">
+                      <div className="text-xs sm:text-sm font-bold flex items-center gap-2">
+                        <WifiOff size={15} className={userSettings.forceOfflineMode ? 'text-amber-400' : 'text-zinc-500'} />
+                        <span>Forza Modalità 100% Offline (Risparmio Batteria in Quota)</span>
+                      </div>
+                      <p className="text-[11px] text-zinc-400">
+                        Blocca i tentativi di connessione su segnale debole o assente, usando solo Mappe, DEM e Bivacchi già in memoria.
+                      </p>
+                    </div>
+                    <div
+                      className={`w-11 h-6 rounded-full relative transition-colors shrink-0 ${
+                        userSettings.forceOfflineMode ? 'bg-amber-500' : 'bg-zinc-700'
+                      }`}
+                    >
+                      <div
+                        className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-all ${
+                          userSettings.forceOfflineMode ? 'left-6' : 'left-1'
+                        }`}
+                      />
+                    </div>
+                  </button>
+
+                  {/* Riepilogo Dati Salvati nel Dispositivo */}
+                  <div className="bg-zinc-950 border border-zinc-800 rounded-xl p-3.5 grid grid-cols-2 sm:grid-cols-4 gap-2.5 text-center">
+                    <div>
+                      <div className="text-[10px] uppercase font-bold text-zinc-500">Preferiti</div>
+                      <div className="text-sm font-mono font-bold text-red-400">{favorites.size}</div>
+                    </div>
+                    <div>
+                      <div className="text-[10px] uppercase font-bold text-zinc-500">Tracce GPX</div>
+                      <div className="text-sm font-mono font-bold text-orange-400">{tracks.length}</div>
+                    </div>
+                    <div>
+                      <div className="text-[10px] uppercase font-bold text-zinc-500">Mappe Offline</div>
+                      <div className="text-sm font-mono font-bold text-emerald-400">
+                        {savedOfflinePackages.length}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-[10px] uppercase font-bold text-zinc-500">Punti in DB</div>
+                      <div className="text-sm font-mono font-bold text-sky-400">{allPois.length}</div>
+                    </div>
+                  </div>
+
+                  {/* Pulsanti Esporta / Importa Backup JSON */}
+                  <div className="flex flex-col sm:flex-row gap-2.5">
+                    <button
+                      type="button"
+                      onClick={handleExportFullBackupJson}
+                      className="flex-1 py-2.5 px-4 bg-orange-600 hover:bg-orange-500 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-2 transition-colors shadow-lg cursor-pointer"
+                    >
+                      <Download size={15} />
+                      <span>Esporta Backup Completo (.JSON)</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => backupFileInputRef.current?.click()}
+                      className="flex-1 py-2.5 px-4 bg-zinc-800 hover:bg-zinc-700 text-zinc-100 border border-zinc-700 rounded-xl text-xs font-bold flex items-center justify-center gap-2 transition-colors cursor-pointer"
+                    >
+                      <Upload size={15} />
+                      <span>Importa / Ripristina Backup (.JSON)</span>
+                    </button>
+                  </div>
+                </section>
+
+                {/* 4. PREFERENZE AVVIO MAPPA, FILTRI & FORMATO COORDINATE */}
+                <section className="bg-zinc-900 border border-zinc-800 rounded-2xl p-5 space-y-4 shadow-xl">
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-10 h-10 rounded-xl bg-sky-500/15 border border-sky-500/30 flex items-center justify-center text-sky-400 shrink-0">
+                      <Sliders size={20} />
+                    </div>
+                    <div>
+                      <h3 className="text-sm sm:text-base font-bold text-white">
+                        Preferenze Mappa, Coordinate & Riavvio Automatico
+                      </h3>
+                      <p className="text-xs text-zinc-400">
+                        Personalizza il comportamento di avvio dell'applicazione e lo stile cartografico
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="space-y-2.5">
+                    {/* Salva automaticamente ultima posizione mappa */}
+                    <button
+                      type="button"
+                      onClick={() =>
+                        updateUserSettings({ autoSaveMapPosition: !userSettings.autoSaveMapPosition })
+                      }
+                      className="w-full p-3 rounded-xl bg-zinc-950 border border-zinc-800 hover:border-zinc-700 flex items-center justify-between gap-3 text-left cursor-pointer"
+                    >
+                      <div>
+                        <div className="text-xs font-bold text-white">
+                          Ricorda ultima posizione mappa, zoom e livello al riavvio
+                        </div>
+                        <div className="text-[11px] text-zinc-400">
+                          Riapre la mappa esattamente sull'ultima valle o cima consultata
+                        </div>
+                      </div>
+                      <div
+                        className={`w-10 h-5 rounded-full relative transition-colors shrink-0 ${
+                          userSettings.autoSaveMapPosition ? 'bg-emerald-500' : 'bg-zinc-700'
+                        }`}
+                      >
+                        <div
+                          className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-all ${
+                            userSettings.autoSaveMapPosition ? 'left-5' : 'left-0.5'
+                          }`}
+                        />
+                      </div>
+                    </button>
+
+                    {/* Salva automaticamente filtri preferiti */}
+                    <button
+                      type="button"
+                      onClick={() =>
+                        updateUserSettings({ autoSaveFilters: !userSettings.autoSaveFilters })
+                      }
+                      className="w-full p-3 rounded-xl bg-zinc-950 border border-zinc-800 hover:border-zinc-700 flex items-center justify-between gap-3 text-left cursor-pointer"
+                    >
+                      <div>
+                        <div className="text-xs font-bold text-white">
+                          Salva e mantieni i Filtri Bivacchi/Rifugi preferiti al riavvio
+                        </div>
+                        <div className="text-[11px] text-zinc-400">
+                          Conserva automaticamente tipologie selezionate, quota, acqua e capienza
+                        </div>
+                      </div>
+                      <div
+                        className={`w-10 h-5 rounded-full relative transition-colors shrink-0 ${
+                          userSettings.autoSaveFilters ? 'bg-emerald-500' : 'bg-zinc-700'
+                        }`}
+                      >
+                        <div
+                          className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-all ${
+                            userSettings.autoSaveFilters ? 'left-5' : 'left-0.5'
+                          }`}
+                        />
+                      </div>
+                    </button>
+                  </div>
+
+                  {/* Stile Mappa Predefinito & Formato Coordinate */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                    <div className="bg-zinc-950 border border-zinc-800 rounded-xl p-3 space-y-2">
+                      <div className="text-[10px] font-bold uppercase text-zinc-500">
+                        Livello Mappa Predefinito
+                      </div>
+                      <div className="grid grid-cols-3 gap-1.5">
+                        {(
+                          [
+                            { id: 'standard', label: 'OSM Topo' },
+                            { id: 'satellite', label: 'Satellite' },
+                            { id: 'hybrid', label: 'Ibrida' },
+                          ] as const
+                        ).map(st => (
+                          <button
+                            key={st.id}
+                            type="button"
+                            onClick={() => {
+                              updateUserSettings({ defaultMapStyle: st.id });
+                              setMapStyle(st.id);
+                            }}
+                            className={`py-1.5 px-2 rounded-lg text-[11px] font-bold border transition-colors cursor-pointer ${
+                              userSettings.defaultMapStyle === st.id
+                                ? 'bg-orange-600 border-orange-500 text-white'
+                                : 'bg-zinc-900 border-zinc-800 text-zinc-400 hover:text-zinc-200'
+                            }`}
+                          >
+                            {st.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="bg-zinc-950 border border-zinc-800 rounded-xl p-3 space-y-2">
+                      <div className="text-[10px] font-bold uppercase text-zinc-500">
+                        Formato Coordinate Preferito
+                      </div>
+                      <div className="grid grid-cols-2 gap-1.5">
+                        {(
+                          [
+                            { id: 'dd', label: 'Decimali (DD)' },
+                            { id: 'dms', label: 'Gradi Min Sec (DMS)' },
+                          ] as const
+                        ).map(cf => (
+                          <button
+                            key={cf.id}
+                            type="button"
+                            onClick={() => updateUserSettings({ coordinateFormat: cf.id })}
+                            className={`py-1.5 px-2 rounded-lg text-[11px] font-bold border transition-colors cursor-pointer ${
+                              userSettings.coordinateFormat === cf.id
+                                ? 'bg-orange-600 border-orange-500 text-white'
+                                : 'bg-zinc-900 border-zinc-800 text-zinc-400 hover:text-zinc-200'
+                            }`}
+                          >
+                            {cf.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                </section>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Toast Notification Banner */}
       {toastMessage && (

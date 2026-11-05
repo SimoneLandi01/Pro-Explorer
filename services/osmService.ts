@@ -397,98 +397,835 @@ const processOsmElements = (elements: any[], filterType: POIType[] | POIType | '
       .filter((poi: POI | null) => poi !== null) as POI[];
 }
 
-// --- NEW GLOBAL SEARCH (NOMINATIM) ---
-export const searchOsmPoisByName = async (searchTerm: string, fastMode: boolean = false): Promise<POI[]> => {
-  // Use Nominatim API for text search
-  try {
-    const params = new URLSearchParams({
-      q: searchTerm,
-      format: 'json',
-      limit: fastMode ? '5' : '15', // Fetch fewer items in fast/autocomplete mode
-      addressdetails: '1',
-      extratags: '1',
-      // Bias search towards Italy/Alps roughly, but allow global
-      viewbox: '6.6,47.1,18.5,36.6', 
-      bounded: '0'
-    });
+// --- HELPER: Classificazione OsmAnd-style di qualsiasi elemento OpenStreetMap ---
+export const classifyOsmSearchFeature = (
+  tags: Record<string, any> = {},
+  osmClass?: string,
+  osmType?: string,
+  rawName: string = ''
+): {
+  poiType: POIType;
+  categoryLabel: string;
+  osmSubkind: NonNullable<POI['osmSubkind']>;
+} => {
+  const nameLower = rawName.toLowerCase();
+  const natural = tags.natural || (osmClass === 'natural' ? osmType : undefined);
+  const tourism = tags.tourism || (osmClass === 'tourism' ? osmType : undefined);
+  const amenity = tags.amenity || (osmClass === 'amenity' ? osmType : undefined);
+  const waterway = tags.waterway || (osmClass === 'waterway' ? osmType : undefined);
+  const highway = tags.highway || (osmClass === 'highway' ? osmType : undefined);
+  const leisure = tags.leisure || (osmClass === 'leisure' ? osmType : undefined);
+  const boundary = tags.boundary || (osmClass === 'boundary' ? osmType : undefined);
+  const building = tags.building || (osmClass === 'building' ? osmType : undefined);
+  const place = tags.place || (osmClass === 'place' ? osmType : undefined);
+  const mountainPass = tags.mountain_pass || (osmClass === 'mountain_pass' ? osmType : undefined);
 
-    const response = await fetch(`${NOMINATIM_API_URL}?${params.toString()}`);
-    if (!response.ok) throw new Error("Nominatim API error");
-    
-    const results = await response.json();
+  // 1. Riserva naturale / Parco (in OsmAnd ha priorità se il tag leisure=nature_reserve o boundary=protected_area è presente)
+  if (
+    leisure === 'nature_reserve' ||
+    boundary === 'national_park' ||
+    boundary === 'protected_area' ||
+    osmType === 'nature_reserve'
+  ) {
+    return {
+      poiType: POIType.VIEWPOINT,
+      categoryLabel: 'Riserva naturale',
+      osmSubkind: 'reserve',
+    };
+  }
 
-    const pois: POI[] = results
-      .map((item: any) => {
-        const tags = { 
-            name: item.name, 
-            ...item.extratags, 
-            amenity: item.class === 'amenity' ? item.type : undefined,
-            tourism: item.class === 'tourism' ? item.type : undefined,
-            natural: item.class === 'natural' ? item.type : undefined
-        };
+  // 2. Bivacco
+  if (
+    tourism === 'wilderness_hut' ||
+    tags.shelter_type === 'bivouac' ||
+    nameLower.includes('bivacco') ||
+    nameLower.startsWith('biv.')
+  ) {
+    return {
+      poiType: POIType.BIVOUAC,
+      categoryLabel: 'Bivacco',
+      osmSubkind: 'bivouac',
+    };
+  }
 
-        let finalType = mapOsmTypeToPoiType(tags);
-        
-        // --- SEARCH FIX: ALLOW GENERIC LOCATIONS ---
-        // If it's not a standard POI (Bivouac/Refuge), check if it's a valid generic location
-        if (!finalType) {
-            const nameLower = item.display_name.toLowerCase();
-            
-            // Name-based override
-            if (nameLower.includes('rifugio')) finalType = POIType.REFUGE;
-            else if (nameLower.includes('bivacco')) finalType = POIType.BIVOUAC;
-            
-            // Geographic type override (Peaks, Cities, Localities)
-            // If it's a place, boundary or natural feature, treat it as a Viewpoint/Destination
-            else if (
-                item.class === 'place' || 
-                item.class === 'boundary' || 
-                item.class === 'natural' ||
-                item.type === 'peak' ||
-                item.type === 'administrative'
-            ) {
-                finalType = POIType.VIEWPOINT; 
-            }
-        }
+  // 3. Rifugio alpino
+  if (
+    tourism === 'alpine_hut' ||
+    building === 'alpine_hut' ||
+    nameLower.includes('rifugio') ||
+    nameLower.startsWith('rif.')
+  ) {
+    return {
+      poiType: POIType.REFUGE,
+      categoryLabel: 'Rifugio',
+      osmSubkind: 'refuge',
+    };
+  }
 
-        // If filtering still failed, exclude it (e.g. roads, specific buildings without purpose)
-        if (!finalType) return null;
+  // 4. Pensilina o ricovero / Malga / Casera / Baita (es. "Malga Tolvà" -> "Pensilina o ricovero")
+  if (
+    amenity === 'shelter' ||
+    building === 'cabin' ||
+    building === 'hut' ||
+    building === 'shelter' ||
+    tourism === 'chalet' ||
+    tags.abandoned === 'shelter' ||
+    nameLower.includes('malga') ||
+    nameLower.includes('casera') ||
+    nameLower.includes('baita') ||
+    nameLower.includes('ricovero') ||
+    nameLower.includes('capanna')
+  ) {
+    return {
+      poiType: POIType.REFUGE,
+      categoryLabel: 'Pensilina o ricovero',
+      osmSubkind: 'shelter',
+    };
+  }
 
-        // Extended info from Nominatim extratags
-        const capacity = item.extratags?.sleeping_places || item.extratags?.capacity ? parseInt(item.extratags.sleeping_places || item.extratags.capacity) : undefined;
-        const hikingDifficulty = item.extratags?.sac_scale;
-        const wikipediaLink = buildWikipediaLink(item.extratags || {});
+  // 5. Picco montuoso / Cima / Vetta (es. "Monte Tolvà" -> "Picco montuoso")
+  if (
+    natural === 'peak' ||
+    natural === 'volcano' ||
+    osmType === 'peak' ||
+    nameLower.startsWith('monte ') ||
+    nameLower.startsWith('cima ') ||
+    nameLower.startsWith('croda ') ||
+    nameLower.startsWith('piz ') ||
+    nameLower.startsWith('torre ') ||
+    nameLower.startsWith('sass ') ||
+    nameLower.startsWith('corno ') ||
+    nameLower.startsWith('col ')
+  ) {
+    return {
+      poiType: POIType.VIEWPOINT,
+      categoryLabel: 'Picco montuoso',
+      osmSubkind: 'peak',
+    };
+  }
 
-        return {
-            id: `nom-${item.place_id}`,
-            name: item.name || item.display_name.split(',')[0],
-            type: finalType,
-            altitude: 0, // Nominatim doesn't always have elevation, enriched later
-            coordinates: { lat: parseFloat(item.lat), lng: parseFloat(item.lon) },
+  // 6. Passo montano / Forcella / Sella
+  if (
+    natural === 'saddle' ||
+    mountainPass === 'yes' ||
+    osmType === 'saddle' ||
+    osmType === 'mountain_pass' ||
+    nameLower.startsWith('passo ') ||
+    nameLower.startsWith('forcella ') ||
+    nameLower.startsWith('forc.') ||
+    nameLower.startsWith('sella ') ||
+    nameLower.startsWith('bocca ')
+  ) {
+    return {
+      poiType: POIType.VIEWPOINT,
+      categoryLabel: 'Passo montano',
+      osmSubkind: 'saddle',
+    };
+  }
+
+  // 7. Ruscello / Torrente / Corso d'acqua (es. "Rio Val Tolvà" -> "Ruscello")
+  if (
+    waterway === 'stream' ||
+    waterway === 'river' ||
+    waterway === 'waterfall' ||
+    waterway === 'ditch' ||
+    waterway === 'canal' ||
+    nameLower.startsWith('rio ') ||
+    nameLower.startsWith('torrente ')
+  ) {
+    return {
+      poiType: POIType.FOUNTAIN,
+      categoryLabel: waterway === 'waterfall' ? 'Cascata' : 'Ruscello',
+      osmSubkind: 'stream',
+    };
+  }
+
+  // 8. Valle / Gola / Cresta (es. "Val Tolvà" -> "Valle")
+  if (
+    natural === 'valley' ||
+    natural === 'gorge' ||
+    natural === 'ridge' ||
+    natural === 'arete' ||
+    natural === 'cliff' ||
+    nameLower.startsWith('val ') ||
+    nameLower.startsWith('valle ') ||
+    nameLower.startsWith('vallon ') ||
+    nameLower.startsWith('vajo ')
+  ) {
+    return {
+      poiType: POIType.VIEWPOINT,
+      categoryLabel: natural === 'ridge' ? 'Cresta montuosa' : 'Valle',
+      osmSubkind: 'valley',
+    };
+  }
+
+  // 9. Lago alpino / Specchio d'acqua
+  if (
+    natural === 'water' ||
+    tags.water === 'lake' ||
+    tags.water === 'pond' ||
+    tags.water === 'reservoir' ||
+    nameLower.startsWith('lago ') ||
+    nameLower.startsWith('laghetto ')
+  ) {
+    return {
+      poiType: POIType.VIEWPOINT,
+      categoryLabel: 'Lago alpino',
+      osmSubkind: 'water',
+    };
+  }
+
+  // 10. Fontana / Sorgente
+  if (
+    amenity === 'drinking_water' ||
+    natural === 'spring' ||
+    nameLower.includes('fontana') ||
+    nameLower.includes('sorgente')
+  ) {
+    return {
+      poiType: POIType.FOUNTAIN,
+      categoryLabel: 'Fontana / Sorgente',
+      osmSubkind: 'fountain',
+    };
+  }
+
+  // 11. Strada forestale / Sentiero (es. "Strada forestale Tolvà - Regana" -> "Strada")
+  if (
+    highway ||
+    osmClass === 'highway' ||
+    nameLower.startsWith('strada ') ||
+    nameLower.startsWith('sentiero ') ||
+    nameLower.startsWith('mulattiera ')
+  ) {
+    return {
+      poiType: POIType.VIEWPOINT,
+      categoryLabel:
+        highway === 'path' || highway === 'footway'
+          ? 'Sentiero'
+          : 'Strada',
+      osmSubkind: 'road',
+    };
+  }
+
+  // 12. Area picnic
+  if (tourism === 'picnic_site' || leisure === 'picnic_table') {
+    return {
+      poiType: POIType.PICNIC,
+      categoryLabel: 'Area picnic',
+      osmSubkind: 'place',
+    };
+  }
+
+  // 13. Punto panoramico
+  if (tourism === 'viewpoint') {
+    return {
+      poiType: POIType.VIEWPOINT,
+      categoryLabel: 'Punto panoramico',
+      osmSubkind: 'peak',
+    };
+  }
+
+  // 14. Località / Borgata / Comune
+  if (place || osmClass === 'place' || osmClass === 'boundary') {
+    return {
+      poiType: POIType.VIEWPOINT,
+      categoryLabel: 'Località alpina',
+      osmSubkind: 'place',
+    };
+  }
+
+  return {
+    poiType: POIType.VIEWPOINT,
+    categoryLabel: 'Luogo alpino',
+    osmSubkind: 'place',
+  };
+};
+
+// --- HELPER: Riferimenti rapidi Comuni Alpini per associare il comune esatto (es. "Castello Tesino") ---
+const ALPINE_MUNICIPALITY_CENTERS: { name: string; lat: number; lng: number }[] = [
+  { name: 'Castello Tesino', lat: 46.064, lng: 11.633 },
+  { name: 'Pieve Tesino', lat: 46.069, lng: 11.611 },
+  { name: 'Cinte Tesino', lat: 46.058, lng: 11.614 },
+  { name: 'Canal San Bovo', lat: 46.156, lng: 11.733 },
+  { name: 'Primiero San Martino di Castrozza', lat: 46.177, lng: 11.829 },
+  { name: 'Mezzano', lat: 46.155, lng: 11.809 },
+  { name: 'Imèr', lat: 46.150, lng: 11.794 },
+  { name: 'Sagron Mis', lat: 46.195, lng: 11.944 },
+  { name: 'Borgo Valsugana', lat: 46.052, lng: 11.455 },
+  { name: 'Telve', lat: 46.072, lng: 11.481 },
+  { name: 'Scurelle', lat: 46.065, lng: 11.506 },
+  { name: 'Bieno', lat: 46.082, lng: 11.557 },
+  { name: 'Grigno', lat: 46.017, lng: 11.638 },
+  { name: 'Levico Terme', lat: 46.011, lng: 11.302 },
+  { name: 'Pergine Valsugana', lat: 46.061, lng: 11.238 },
+  { name: 'Predazzo', lat: 46.311, lng: 11.603 },
+  { name: 'Moena', lat: 46.376, lng: 11.663 },
+  { name: 'Canazei', lat: 46.476, lng: 11.770 },
+  { name: 'Cavalese', lat: 46.291, lng: 11.459 },
+  { name: 'Pinzolo', lat: 46.160, lng: 10.765 },
+  { name: 'Molveno', lat: 46.143, lng: 10.965 },
+  { name: 'Peio', lat: 46.362, lng: 10.673 },
+  { name: 'Vermiglio', lat: 46.298, lng: 10.693 },
+  { name: 'Rabbi', lat: 46.401, lng: 10.847 },
+  { name: 'Arco', lat: 45.918, lng: 10.886 },
+  { name: 'Riva del Garda', lat: 45.885, lng: 10.841 },
+  { name: 'Ala', lat: 45.756, lng: 11.000 },
+  { name: 'Avio', lat: 45.736, lng: 10.938 },
+  { name: 'Vallarsa', lat: 45.782, lng: 11.118 },
+  { name: 'Cortina d\'Ampezzo', lat: 46.540, lng: 12.135 },
+  { name: 'Auronzo di Cadore', lat: 46.551, lng: 12.443 },
+  { name: 'Misurina', lat: 46.581, lng: 12.255 },
+  { name: 'Rocca Pietore', lat: 46.434, lng: 11.977 },
+  { name: 'Alleghe', lat: 46.406, lng: 12.020 },
+  { name: 'Falcade', lat: 46.358, lng: 11.872 },
+  { name: 'Taibon Agordino', lat: 46.302, lng: 12.010 },
+  { name: 'Agordo', lat: 46.281, lng: 12.034 },
+  { name: 'Val di Zoldo', lat: 46.348, lng: 12.185 },
+  { name: 'San Vito di Cadore', lat: 46.462, lng: 12.205 },
+  { name: 'Borca di Cadore', lat: 46.437, lng: 12.220 },
+  { name: 'Vodo di Cadore', lat: 46.419, lng: 12.245 },
+  { name: 'Pieve di Cadore', lat: 46.428, lng: 12.371 },
+  { name: 'Domegge di Cadore', lat: 46.461, lng: 12.415 },
+  { name: 'Calalzo di Cadore', lat: 46.446, lng: 12.380 },
+  { name: 'Santo Stefano di Cadore', lat: 46.557, lng: 12.551 },
+  { name: 'Sappada', lat: 46.566, lng: 12.685 },
+  { name: 'Feltre', lat: 46.019, lng: 11.908 },
+  { name: 'Sovramonte', lat: 46.062, lng: 11.787 },
+  { name: 'Lamon', lat: 46.046, lng: 11.748 },
+  { name: 'Cesiomaggiore', lat: 46.082, lng: 11.996 },
+  { name: 'Sospirolo', lat: 46.135, lng: 12.081 },
+  { name: 'Sedico', lat: 46.115, lng: 12.096 },
+  { name: 'Belluno', lat: 46.142, lng: 12.216 },
+  { name: 'Longarone', lat: 46.268, lng: 12.299 },
+  { name: 'Alpago', lat: 46.144, lng: 12.368 },
+  { name: 'Asiago', lat: 45.876, lng: 11.509 },
+  { name: 'Gallio', lat: 45.892, lng: 11.554 },
+  { name: 'Roana', lat: 45.862, lng: 11.462 },
+  { name: 'Enego', lat: 45.942, lng: 11.709 },
+  { name: 'Valli del Pasubio', lat: 45.758, lng: 11.217 },
+  { name: 'Recoaro Terme', lat: 45.704, lng: 11.227 },
+  { name: 'Crespano del Grappa', lat: 45.847, lng: 11.838 },
+  { name: 'Solagna', lat: 45.818, lng: 11.718 },
+  { name: 'Claut', lat: 46.268, lng: 12.517 },
+  { name: 'Cimolais', lat: 46.284, lng: 12.437 },
+  { name: 'Erto e Casso', lat: 46.275, lng: 12.371 },
+  { name: 'Forni di Sopra', lat: 46.420, lng: 12.585 },
+  { name: 'Chiusaforte', lat: 46.407, lng: 13.310 },
+  { name: 'Tarvisio', lat: 46.505, lng: 13.580 },
+  { name: 'Ortisei', lat: 46.574, lng: 11.671 },
+  { name: 'Selva di Val Gardena', lat: 46.555, lng: 11.759 },
+  { name: 'Corvara in Badia', lat: 46.549, lng: 11.873 },
+  { name: 'Funes', lat: 46.642, lng: 11.681 },
+  { name: 'Braies', lat: 46.720, lng: 12.132 },
+  { name: 'Dobbiaco', lat: 46.726, lng: 12.223 },
+  { name: 'Sesto', lat: 46.702, lng: 12.350 },
+  { name: 'Courmayeur', lat: 45.796, lng: 6.969 },
+  { name: 'Valsavarenche', lat: 45.592, lng: 7.207 },
+  { name: 'Cogne', lat: 45.608, lng: 7.356 },
+  { name: 'Gressoney-La-Trinité', lat: 45.827, lng: 7.823 },
+  { name: 'Valfurva', lat: 46.462, lng: 10.412 },
+  { name: 'Bormio', lat: 46.468, lng: 10.370 },
+  { name: 'Chiesa in Valmalenco', lat: 46.264, lng: 9.848 },
+  { name: 'Val Masino', lat: 46.213, lng: 9.638 },
+];
+
+export const resolvePoiLocality = (
+  tags: Record<string, any> = {},
+  address: Record<string, any> = {},
+  lat: number,
+  lng: number
+): string => {
+  const direct =
+    tags['addr:city'] ||
+    tags['addr:municipality'] ||
+    tags['addr:village'] ||
+    tags['is_in:municipality'] ||
+    tags['is_in:city'] ||
+    tags['is_in:village'] ||
+    address.municipality ||
+    address.village ||
+    address.town ||
+    address.city ||
+    address.hamlet ||
+    address.county;
+
+  if (direct && typeof direct === 'string' && direct.trim().length > 0) {
+    return direct.trim().split(',')[0].trim();
+  }
+
+  // Fallback sul comune alpino più vicino entro ~14 km (es. Castello Tesino per Val Tolvà / Monte Tolvà)
+  let bestName = '';
+  let bestDistKm = 14.5;
+  for (const m of ALPINE_MUNICIPALITY_CENTERS) {
+    const dLat = ((m.lat - lat) * Math.PI) / 180;
+    const dLng = ((m.lng - lng) * Math.PI) / 180;
+    const a =
+      Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+      Math.cos((lat * Math.PI) / 180) *
+        Math.cos((m.lat * Math.PI) / 180) *
+        Math.sin(dLng / 2) *
+        Math.sin(dLng / 2);
+    const distKm = 6371 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    if (distKm < bestDistKm) {
+      bestDistKm = distKm;
+      bestName = m.name;
+    }
+  }
+  return bestName;
+};
+
+// Costruisce una regex Overpass insensibile agli accenti (es. "tolv" o "tolva" -> trova anche "Tolvà" e "Tolva'")
+const buildAccentInsensitiveOverpassRegex = (input: string): string => {
+  const escaped = input
+    .trim()
+    .replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    .replace(/['’`]/g, '');
+  return escaped
+    .replace(/[aàáâä]/gi, '[aàáâä]')
+    .replace(/[eèéêë]/gi, '[eèéêë]')
+    .replace(/[iìíîï]/gi, '[iìíîï]')
+    .replace(/[oòóôö]/gi, '[oòóôö]')
+    .replace(/[uùúûü]/gi, '[uùúûü]');
+};
+
+// --- NEW GLOBAL SEARCH (OSMAND-GRADE: OVERPASS REGEX + PHOTON + NOMINATIM) ---
+export const searchOsmPoisByName = async (
+  searchTerm: string,
+  fastMode: boolean = false,
+  biasCenter?: { lat: number; lng: number }
+): Promise<POI[]> => {
+  const cleanedTerm = searchTerm.trim();
+  if (!cleanedTerm) return [];
+
+  // 1. Riconoscimento diretto Coordinate GPS (es. "46.502, 12.145" o "46.502 12.145")
+  const coordMatch = cleanedTerm.match(
+    /^([+-]?\d{1,2}(?:\.\d+)?)\s*[,;\s]\s*([+-]?\d{1,3}(?:\.\d+)?)$/
+  );
+  if (coordMatch) {
+    const lat = parseFloat(coordMatch[1]);
+    const lng = parseFloat(coordMatch[2]);
+    if (lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180) {
+      const estEle = estimateOfflineAltitude(lat, lng) || 0;
+      const loc = resolvePoiLocality({}, {}, lat, lng);
+      const coordPoi: POI = {
+        id: `coord-${lat.toFixed(5)}-${lng.toFixed(5)}`,
+        name: `Coordinate ${lat.toFixed(5)}°N, ${lng.toFixed(5)}°E`,
+        type: POIType.VIEWPOINT,
+        altitude: estEle,
+        coordinates: { lat, lng },
+        exposure: Exposure.VARIOUS,
+        signal: SignalStrength.NONE,
+        hasWater: false,
+        hasRoof: false,
+        hasElectricity: false,
+        hasFireplace: false,
+        description: `Punto geografico diretto (${lat.toFixed(5)}, ${lng.toFixed(5)})`,
+        imageUrl: getPlaceHolderImage(POIType.VIEWPOINT),
+        categoryLabel: 'Coordinate GPS',
+        locality: loc || undefined,
+        osmSubkind: 'place',
+      };
+      return fastMode ? [coordPoi] : await enrichPoisWithAltitude([coordPoi]);
+    }
+  }
+
+  const refCenter = biasCenter || { lat: 46.2, lng: 11.4 };
+
+  // Helper rapido per calcolare la distanza in km dal centro di riferimento
+  const distFromRefKm = (lat: number, lng: number) => {
+    const dLat = ((lat - refCenter.lat) * Math.PI) / 180;
+    const dLng = ((lng - refCenter.lng) * Math.PI) / 180;
+    const a =
+      Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+      Math.cos((refCenter.lat * Math.PI) / 180) *
+        Math.cos((lat * Math.PI) / 180) *
+        Math.sin(dLng / 2) *
+        Math.sin(dLng / 2);
+    return 6371 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  };
+
+  // A) Ricerca Overpass Regex attorno al centro (trova prefissi e sottostringhe come "tolv" -> Monte Tolvà, Rio Val Tolvà, Malga Tolvà, Val Tolvà, Strada forestale Tolvà)
+  const fetchOverpassRegexMatches = async (): Promise<POI[]> => {
+    if (cleanedTerm.length < 2) return [];
+    const regexPattern = buildAccentInsensitiveOverpassRegex(cleanedTerm);
+    const radiusMeters = fastMode ? 85000 : 140000;
+    const query = `[out:json][timeout:6];nwr(around:${radiusMeters},${refCenter.lat.toFixed(4)},${refCenter.lng.toFixed(4)})["name"~"${regexPattern}",i];out center 40;`;
+
+    try {
+      const data = await fetchTrailOverpassData(query);
+      if (!data || !Array.isArray(data.elements)) return [];
+
+      return data.elements
+        .map((el: any): POI | null => {
+          const tags = el.tags || {};
+          const rawName = tags['name:it'] || tags.name;
+          if (!rawName) return null;
+
+          const lat = el.lat ?? el.center?.lat;
+          const lng = el.lon ?? el.center?.lon;
+          if (typeof lat !== 'number' || typeof lng !== 'number') return null;
+
+          const { poiType, categoryLabel, osmSubkind } = classifyOsmSearchFeature(
+            tags,
+            undefined,
+            undefined,
+            rawName
+          );
+          const locality = resolvePoiLocality(tags, {}, lat, lng);
+
+          let altitude = parseOsmElevationTag(tags.ele) || 0;
+          if (altitude === 0) {
+            const cachedEle = estimateOfflineAltitude(lat, lng);
+            if (cachedEle && cachedEle > 0) altitude = cachedEle;
+          }
+
+          const capacity =
+            tags.sleeping_places || tags.capacity
+              ? parseInt(tags.sleeping_places || tags.capacity, 10)
+              : undefined;
+          const hasWater =
+            poiType === POIType.FOUNTAIN ||
+            osmSubkind === 'stream' ||
+            tags.drinking_water === 'yes';
+          const hasFireplace = tags.fireplace === 'yes' || tags.heating === 'stove';
+          const cleanDesc = locality ? `${categoryLabel} • ${locality}` : categoryLabel;
+
+          return {
+            id: `osm-${el.type || 'n'}-${el.id}`,
+            name: rawName,
+            type: poiType,
+            altitude,
+            coordinates: { lat, lng },
             exposure: Exposure.VARIOUS,
             signal: SignalStrength.NONE,
-            hasWater: finalType === POIType.FOUNTAIN,
-            hasRoof: finalType !== POIType.FOUNTAIN && finalType !== POIType.VIEWPOINT && finalType !== POIType.PICNIC,
+            hasWater,
+            hasRoof:
+              poiType === POIType.BIVOUAC ||
+              poiType === POIType.REFUGE ||
+              osmSubkind === 'shelter',
+            hasElectricity: tags.electricity === 'yes',
+            hasFireplace,
+            description: cleanDesc,
+            imageUrl: getPlaceHolderImage(poiType),
+            capacity,
+            operator: tags.operator,
+            website: tags.website || tags['contact:website'] || tags.url,
+            hikingDifficulty: tags.sac_scale,
+            wikipediaLink: buildWikipediaLink(tags),
+            categoryLabel,
+            locality: locality || undefined,
+            osmSubkind,
+          };
+        })
+        .filter((p: POI | null): p is POI => p !== null);
+    } catch {
+      return [];
+    }
+  };
+
+  // B) Ricerca Photon Komoot (ottima per autocompletamento prefissi e località comunali)
+  const fetchPhotonMatches = async (): Promise<POI[]> => {
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 4000);
+      const url = `https://photon.komoot.io/api/?q=${encodeURIComponent(cleanedTerm)}&lat=${refCenter.lat.toFixed(4)}&lon=${refCenter.lng.toFixed(4)}&limit=18&lang=it`;
+      const res = await fetch(url, { signal: controller.signal });
+      clearTimeout(timer);
+      if (!res.ok) return [];
+      const data = await res.json();
+      if (!data || !Array.isArray(data.features)) return [];
+
+      return data.features
+        .map((feat: any): POI | null => {
+          const props = feat.properties || {};
+          const coords = feat.geometry?.coordinates;
+          if (!Array.isArray(coords) || coords.length < 2) return null;
+          const lng = parseFloat(coords[0]);
+          const lat = parseFloat(coords[1]);
+          if (isNaN(lat) || isNaN(lng)) return null;
+
+          const rawName = props.name;
+          if (!rawName) return null;
+
+          const osmKey = props.osm_key;
+          const osmVal = props.osm_value;
+          const synthTags: Record<string, any> = { name: rawName };
+          if (osmKey && osmVal) synthTags[osmKey] = osmVal;
+
+          const { poiType, categoryLabel, osmSubkind } = classifyOsmSearchFeature(
+            synthTags,
+            osmKey,
+            osmVal,
+            rawName
+          );
+          const locality = resolvePoiLocality(
+            synthTags,
+            {
+              city: props.city,
+              town: props.town,
+              village: props.village || props.locality || props.district,
+              county: props.county,
+            },
+            lat,
+            lng
+          );
+
+          let altitude = 0;
+          const cachedEle = estimateOfflineAltitude(lat, lng);
+          if (cachedEle && cachedEle > 0) altitude = cachedEle;
+
+          const cleanDesc = locality ? `${categoryLabel} • ${locality}` : categoryLabel;
+
+          return {
+            id: `pho-${props.osm_id || `${lat.toFixed(4)}-${lng.toFixed(4)}`}`,
+            name: rawName,
+            type: poiType,
+            altitude,
+            coordinates: { lat, lng },
+            exposure: Exposure.VARIOUS,
+            signal: SignalStrength.NONE,
+            hasWater: poiType === POIType.FOUNTAIN || osmSubkind === 'stream',
+            hasRoof:
+              poiType === POIType.BIVOUAC ||
+              poiType === POIType.REFUGE ||
+              osmSubkind === 'shelter',
             hasElectricity: false,
             hasFireplace: false,
-            description: item.display_name, // Full address as description for generic results
-            imageUrl: getPlaceHolderImage(finalType),
-            capacity: capacity,
+            description: cleanDesc,
+            imageUrl: getPlaceHolderImage(poiType),
+            categoryLabel,
+            locality: locality || undefined,
+            osmSubkind,
+          };
+        })
+        .filter((p: POI | null): p is POI => p !== null);
+    } catch {
+      return [];
+    }
+  };
+
+  // C) Ricerca Nominatim con dettagli indirizzo ed extratags
+  const fetchNominatimMatches = async (): Promise<POI[]> => {
+    try {
+      const params = new URLSearchParams({
+        q: cleanedTerm,
+        format: 'json',
+        limit: fastMode ? '15' : '25',
+        addressdetails: '1',
+        extratags: '1',
+        namedetails: '1',
+        'accept-language': 'it,de,fr,en',
+        viewbox: '6.4,47.2,18.6,36.5',
+        bounded: '0',
+      });
+
+      const response = await fetch(`${NOMINATIM_API_URL}?${params.toString()}`);
+      if (!response.ok) return [];
+      const results = await response.json();
+      if (!Array.isArray(results)) return [];
+
+      return results
+        .map((item: any): POI | null => {
+          const rawName =
+            item.namedetails?.['name:it'] ||
+            item.namedetails?.name ||
+            item.name ||
+            (item.display_name ? item.display_name.split(',')[0] : '');
+          if (!rawName) return null;
+
+          const lat = parseFloat(item.lat);
+          const lng = parseFloat(item.lon);
+          if (isNaN(lat) || isNaN(lng)) return null;
+
+          const tags = {
+            name: rawName,
+            ...item.extratags,
+            amenity: item.class === 'amenity' ? item.type : item.extratags?.amenity,
+            tourism: item.class === 'tourism' ? item.type : item.extratags?.tourism,
+            natural: item.class === 'natural' ? item.type : item.extratags?.natural,
+            waterway: item.class === 'waterway' ? item.type : item.extratags?.waterway,
+            highway: item.class === 'highway' ? item.type : item.extratags?.highway,
+            leisure: item.class === 'leisure' ? item.type : item.extratags?.leisure,
+            boundary: item.class === 'boundary' ? item.type : item.extratags?.boundary,
+          };
+
+          const { poiType, categoryLabel, osmSubkind } = classifyOsmSearchFeature(
+            tags,
+            item.class,
+            item.type,
+            rawName
+          );
+          const locality = resolvePoiLocality(tags, item.address || {}, lat, lng);
+
+          let altitude = parseOsmElevationTag(item.extratags?.ele) || 0;
+          if (altitude === 0) {
+            const cachedEle = estimateOfflineAltitude(lat, lng);
+            if (cachedEle && cachedEle > 0) altitude = cachedEle;
+          }
+
+          const capacity =
+            item.extratags?.sleeping_places || item.extratags?.capacity
+              ? parseInt(item.extratags.sleeping_places || item.extratags.capacity, 10)
+              : undefined;
+          const hasWater =
+            poiType === POIType.FOUNTAIN ||
+            osmSubkind === 'stream' ||
+            item.extratags?.drinking_water === 'yes';
+          const hasFireplace =
+            item.extratags?.fireplace === 'yes' || item.extratags?.heating === 'stove';
+          const cleanDesc = locality
+            ? `${categoryLabel} • ${locality}`
+            : item.display_name || categoryLabel;
+
+          return {
+            id: `nom-${item.place_id}`,
+            name: rawName,
+            type: poiType,
+            altitude,
+            coordinates: { lat, lng },
+            exposure: Exposure.VARIOUS,
+            signal: SignalStrength.NONE,
+            hasWater,
+            hasRoof:
+              poiType === POIType.BIVOUAC ||
+              poiType === POIType.REFUGE ||
+              osmSubkind === 'shelter',
+            hasElectricity: item.extratags?.electricity === 'yes',
+            hasFireplace,
+            description: cleanDesc,
+            imageUrl: getPlaceHolderImage(poiType),
+            capacity,
             operator: item.extratags?.operator,
             website: item.extratags?.website || item.extratags?.url,
-            hikingDifficulty,
-            wikipediaLink
-        };
-      })
-      .filter((p: POI | null) => p !== null);
+            hikingDifficulty: item.extratags?.sac_scale,
+            wikipediaLink: buildWikipediaLink(item.extratags || {}),
+            categoryLabel,
+            locality: locality || undefined,
+            osmSubkind,
+          };
+        })
+        .filter((p: POI | null): p is POI => p !== null);
+    } catch {
+      return [];
+    }
+  };
 
-    // Skip altitude enrichment for autocomplete to make it fast
-    if (fastMode) return pois;
+  try {
+    const [overpassRes, photonRes, nominatimRes] = await Promise.all([
+      fetchOverpassRegexMatches(),
+      fetchPhotonMatches(),
+      fetchNominatimMatches(),
+    ]);
 
-    return await enrichPoisWithAltitude(pois);
+    const rawCombined = [...overpassRes, ...nominatimRes, ...photonRes];
+    if (rawCombined.length === 0) return [];
 
+    // Propaga il comune (es. "Castello Tesino") dai risultati con indirizzo esplicito agli elementi adiacenti (< 6 km)
+    const knownLocalities = rawCombined.filter(p => p.locality && p.locality.length > 0);
+    rawCombined.forEach(p => {
+      if (!p.locality && knownLocalities.length > 0) {
+        const nearbyWithLoc = knownLocalities.find(
+          k =>
+            Math.hypot(
+              k.coordinates.lat - p.coordinates.lat,
+              k.coordinates.lng - p.coordinates.lng
+            ) < 0.055
+        );
+        if (nearbyWithLoc?.locality) {
+          p.locality = nearbyWithLoc.locality;
+          p.description = `${p.categoryLabel || p.type} • ${nearbyWithLoc.locality}`;
+        }
+      }
+    });
+
+    // Deduplica intelligente: conserva voci con stesso nome ma categoria diversa (es. "Malga Tolva'" Riserva naturale vs "Malga Tolvà" Pensilina o ricovero, come in OsmAnd!)
+    const deduplicated: POI[] = [];
+    for (const candidate of rawCombined) {
+      const normCandName = candidate.name
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/['’`]/g, '')
+        .trim();
+      const candSubkind = candidate.osmSubkind || 'place';
+
+      const existingIdx = deduplicated.findIndex(ex => {
+        const normExName = ex.name
+          .toLowerCase()
+          .normalize('NFD')
+          .replace(/[\u0300-\u036f]/g, '')
+          .replace(/['’`]/g, '')
+          .trim();
+        const sameNameAndKind =
+          normExName === normCandName && (ex.osmSubkind || 'place') === candSubkind;
+        const closeCoords =
+          Math.hypot(
+            ex.coordinates.lat - candidate.coordinates.lat,
+            ex.coordinates.lng - candidate.coordinates.lng
+          ) < 0.012; // ~1.2 km
+        return sameNameAndKind && closeCoords;
+      });
+
+      if (existingIdx === -1) {
+        deduplicated.push(candidate);
+      } else {
+        // Arricchisci il record già presente se il candidato ha quota o comune migliori
+        const ex = deduplicated[existingIdx];
+        if (!ex.altitude && candidate.altitude) ex.altitude = candidate.altitude;
+        if (!ex.locality && candidate.locality) {
+          ex.locality = candidate.locality;
+          ex.description = `${ex.categoryLabel || ex.type} • ${candidate.locality}`;
+        }
+      }
+    }
+
+    // Se esistono risultati nell'arco alpino (< 280 km), rimuovi omonimi esteri lontanissimi (es. Tolva in Spagna a 975 km)
+    const hasRegionalMatches = deduplicated.some(
+      p => distFromRefKm(p.coordinates.lat, p.coordinates.lng) < 280
+    );
+    const filteredByDistance = hasRegionalMatches
+      ? deduplicated.filter(p => distFromRefKm(p.coordinates.lat, p.coordinates.lng) < 400)
+      : deduplicated;
+
+    // Ordina per rilevanza OsmAnd (vicinanza + importanza escursionistica: Picco/Bivacco/Rifugio/Ruscello/Riserva/Valle/Ricovero prima delle singole strade)
+    const subkindPriority = (sk?: POI['osmSubkind']): number => {
+      switch (sk) {
+        case 'bivouac':
+        case 'refuge':
+        case 'peak':
+          return 4;
+        case 'stream':
+        case 'reserve':
+        case 'valley':
+        case 'shelter':
+        case 'saddle':
+        case 'water':
+        case 'fountain':
+          return 3;
+        case 'road':
+          return 2;
+        default:
+          return 1;
+      }
+    };
+
+    filteredByDistance.sort((a, b) => {
+      const dA = distFromRefKm(a.coordinates.lat, a.coordinates.lng);
+      const dB = distFromRefKm(b.coordinates.lat, b.coordinates.lng);
+      // Se due elementi sono nella stessa vallata (entro 6 km l'uno dall'altro), ordina per priorità escursionistica e poi distanza esatta (come OsmAnd!)
+      if (Math.abs(dA - dB) < 6) {
+        const pA = subkindPriority(a.osmSubkind);
+        const pB = subkindPriority(b.osmSubkind);
+        if (pA !== pB) return pB - pA;
+      }
+      return dA - dB;
+    });
+
+    if (fastMode) return filteredByDistance.slice(0, 20);
+
+    return await enrichPoisWithAltitude(filteredByDistance.slice(0, 25));
   } catch (e) {
-    console.error("Search Error:", e);
+    console.error('Search Error:', e);
     return [];
   }
 };

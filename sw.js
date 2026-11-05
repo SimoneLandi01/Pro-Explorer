@@ -86,20 +86,27 @@ self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
 
   // Strategy 1: Map Tiles (OpenStreetMap, Esri Satellite/Hybrid, Waymarked Trails, RainViewer)
-  // Cache-First con aggiornamento in background e fallback SVG sicuro se offline
+  // Cache-First con normalizzazione sottodominio OSM (a/b/c -> a), aggiornamento in background e fallback SVG sicuro se offline
   if (
     (url.hostname.includes('openstreetmap.org') && url.pathname.endsWith('.png')) ||
     url.hostname.includes('arcgisonline.com') ||
     url.hostname.includes('waymarkedtrails.org') ||
     url.hostname.includes('rainviewer.com')
   ) {
+    const canonicalTileUrl = url.hostname.endsWith('.tile.openstreetmap.org')
+      ? `https://a.tile.openstreetmap.org${url.pathname}`
+      : event.request.url;
+
     event.respondWith(
       caches.open(TILE_CACHE_NAME).then(async (tileCache) => {
-        const cached = await tileCache.match(event.request);
+        const cached =
+          (await tileCache.match(canonicalTileUrl)) ||
+          (await tileCache.match(event.request));
+
         const networkPromise = fetch(event.request)
           .then((networkResponse) => {
             if (networkResponse && (networkResponse.status === 200 || networkResponse.type === 'opaque')) {
-              tileCache.put(event.request, networkResponse.clone());
+              tileCache.put(canonicalTileUrl, networkResponse.clone());
             }
             return networkResponse;
           })
