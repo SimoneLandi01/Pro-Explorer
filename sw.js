@@ -1,4 +1,4 @@
-const APP_CACHE_NAME = 'mountpro-app-v6-offline';
+const APP_CACHE_NAME = 'mountpro-app-v7-opentopo';
 const TILE_CACHE_NAME = 'mountpro-tiles-v1-offline';
 
 const ASSETS_TO_CACHE = [
@@ -43,6 +43,7 @@ function createFallbackTileResponse(urlStr) {
 }
 
 self.addEventListener('install', (event) => {
+  self.skipWaiting();
   event.waitUntil(
     caches.open(APP_CACHE_NAME).then(async (cache) => {
       for (const asset of ASSETS_TO_CACHE) {
@@ -61,7 +62,6 @@ self.addEventListener('install', (event) => {
       }
     })
   );
-  self.skipWaiting();
 });
 
 self.addEventListener('activate', (event) => {
@@ -85,16 +85,18 @@ self.addEventListener('fetch', (event) => {
   if (event.request.method !== 'GET') return;
   const url = new URL(event.request.url);
 
-  // Strategy 1: Map Tiles (OpenStreetMap, Esri Satellite/Hybrid, Waymarked Trails, RainViewer)
-  // Cache-First con normalizzazione sottodominio OSM (a/b/c -> a), aggiornamento in background e fallback SVG sicuro se offline
+  // Strategy 1: Map Tiles (OpenStreetMap, OpenTopoMap, Esri Satellite/Hybrid, Waymarked Trails, RainViewer)
   if (
     (url.hostname.includes('openstreetmap.org') && url.pathname.endsWith('.png')) ||
+    (url.hostname.includes('opentopomap.org') && url.pathname.endsWith('.png')) ||
     url.hostname.includes('arcgisonline.com') ||
     url.hostname.includes('waymarkedtrails.org') ||
     url.hostname.includes('rainviewer.com')
   ) {
     const canonicalTileUrl = url.hostname.endsWith('.tile.openstreetmap.org')
       ? `https://a.tile.openstreetmap.org${url.pathname}`
+      : url.hostname.endsWith('.tile.opentopomap.org')
+      ? `https://a.tile.opentopomap.org${url.pathname}`
       : event.request.url;
 
     event.respondWith(

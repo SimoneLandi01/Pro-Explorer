@@ -1,4 +1,4 @@
-const APP_CACHE_NAME = 'mountpro-app-v6-offline';
+const APP_CACHE_NAME = 'mountpro-app-v7-opentopo';
 const TILE_CACHE_NAME = 'mountpro-tiles-v1-offline';
 
 const ASSETS_TO_CACHE = [
