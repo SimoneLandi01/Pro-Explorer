@@ -1,0 +1,131 @@
+import { POIType, Exposure, SignalStrength, POI, Trail } from './types.ts';
+
+export const MOCK_POIS: POI[] = [
+  {
+    id: '1',
+    name: 'Bivacco Rossi',
+    type: POIType.BIVOUAC,
+    altitude: 2450,
+    coordinates: { lat: 45.8, lng: 7.2 },
+    exposure: Exposure.SOUTH,
+    signal: SignalStrength.LOW,
+    hasWater: false,
+    hasRoof: true,
+    hasElectricity: false,
+    hasFireplace: false,
+    description: 'Bivacco in lamiera, 6 posti letto, situato sulla cresta sud.',
+    imageUrl: 'https://picsum.photos/seed/bivacco/800/600'
+  },
+  {
+    id: '2',
+    name: 'Fontana del Pastore',
+    type: POIType.FOUNTAIN,
+    altitude: 1200,
+    coordinates: { lat: 45.75, lng: 7.3 },
+    exposure: Exposure.NORTH,
+    signal: SignalStrength.HIGH,
+    hasWater: true,
+    hasRoof: false,
+    hasElectricity: false,
+    hasFireplace: false,
+    description: 'Sorgente perenne con acqua freschissima, punto di ristoro ideale.',
+    imageUrl: 'https://picsum.photos/seed/fountain/800/600'
+  },
+  {
+    id: '3',
+    name: 'Rifugio Alpino Gran Paradiso',
+    type: POIType.REFUGE,
+    altitude: 1950,
+    coordinates: { lat: 45.82, lng: 7.15 },
+    exposure: Exposure.EAST,
+    signal: SignalStrength.MEDIUM,
+    hasWater: true,
+    hasRoof: true,
+    hasElectricity: true,
+    hasFireplace: true,
+    description: 'Gestito nei mesi estivi, ottima cucina valdostana.',
+    imageUrl: 'https://picsum.photos/seed/rifugio/800/600'
+  },
+  {
+    id: '4',
+    name: 'Bivacco Speranza',
+    type: POIType.BIVOUAC,
+    altitude: 3100,
+    coordinates: { lat: 45.9, lng: 7.4 },
+    exposure: Exposure.WEST,
+    signal: SignalStrength.NONE,
+    hasWater: false,
+    hasRoof: true,
+    hasElectricity: false,
+    hasFireplace: false,
+    description: 'Alta quota, accesso alpinistico richiesto. Vista spettacolare.',
+    imageUrl: 'https://picsum.photos/seed/mountain/800/600'
+  },
+  {
+    id: '5',
+    name: 'Area Picnic Val Ferret',
+    type: POIType.PICNIC,
+    altitude: 1600,
+    coordinates: { lat: 45.85, lng: 7.05 },
+    exposure: Exposure.SOUTH,
+    signal: SignalStrength.HIGH,
+    hasWater: true,
+    hasRoof: true,
+    hasElectricity: false,
+    hasFireplace: true,
+    description: 'Area attrezzata con tavoli, barbecue e fontana.',
+    imageUrl: 'https://picsum.photos/seed/picnic/800/600'
+  },
+  {
+    id: '6',
+    name: 'Belvedere del Monte Bianco',
+    type: POIType.VIEWPOINT,
+    altitude: 2200,
+    coordinates: { lat: 45.78, lng: 6.95 },
+    exposure: Exposure.SOUTH,
+    signal: SignalStrength.MEDIUM,
+    hasWater: false,
+    hasRoof: false,
+    hasElectricity: false,
+    hasFireplace: false,
+    description: 'Punto panoramico accessibile con sentiero facile.',
+    imageUrl: 'https://picsum.photos/seed/view/800/600'
+  },
+  {
+    id: '7',
+    name: 'Sorgente Roccia Viva',
+    type: POIType.FOUNTAIN,
+    altitude: 2100,
+    coordinates: { lat: 45.88, lng: 7.25 },
+    exposure: Exposure.NORTH,
+    signal: SignalStrength.LOW,
+    hasWater: true,
+    hasRoof: false,
+    hasElectricity: false,
+    hasFireplace: false,
+    description: 'Acqua gelida anche in estate, sgorga direttamente dalla roccia.',
+    imageUrl: 'https://picsum.photos/seed/water/800/600'
+  },
+  {
+    id: '8',
+    name: 'Rifugio Teodulo',
+    type: POIType.REFUGE,
+    altitude: 3317,
+    coordinates: { lat: 45.95, lng: 7.7 },
+    exposure: Exposure.SOUTH,
+    signal: SignalStrength.HIGH,
+    hasWater: true,
+    hasRoof: true,
+    hasElectricity: true,
+    hasFireplace: true,
+    description: 'Rifugio storico sul confine svizzero.',
+    imageUrl: 'https://picsum.photos/seed/snow/800/600'
+  }
+];
+
+export const MOCK_TRAILS: Trail[] = [
+  { id: 't1', name: 'Alta Via 1 - Tappa 4', difficulty: 'Hard', lengthKm: 12, gainM: 1100, duration: '6h' },
+  { id: 't2', name: 'Anello del Lago Blu', difficulty: 'Easy', lengthKm: 5, gainM: 200, duration: '2h' },
+  { id: 't3', name: 'Cresta delle Aquile', difficulty: 'Expert', lengthKm: 8, gainM: 1400, duration: '8h' },
+  { id: 't4', name: 'Sentiero dei Camosci', difficulty: 'Medium', lengthKm: 9, gainM: 600, duration: '4h' }
+];
