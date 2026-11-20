@@ -530,3 +530,120 @@ export const createHillshadeLayer = (opts: { zIndex?: number } = {}): L.GridLaye
     pane: 'tilePane',
   }) as L.GridLayer;
 };
+
+/**
+ * Manto Nevoso Invernale 3D calcolato dal DEM Terrarium per il "Satellite Invernale":
+ * - Quota neve realistica modulata dall'esposizione (~1350m a Nord, ~1550m a E/O, ~1750m a Sud)
+ * - Pareti rocciose ripide (>45°–58°) lasciate scoperte come sulle Dolomiti reali
+ * - Ombreggiatura 3D bianco-ghiaccio su versanti al sole e azzurro alpino in ombra
+ * - Funziona a tutti gli zoom (Z9–Z19) e anche 100% offline!
+ */
+export const createWinterSnowLayer = (opts: { zIndex?: number } = {}): L.GridLayer => {
+  const azRad = (315 * Math.PI) / 180;
+  const altRad = (42 * Math.PI) / 180;
+  const zenithRad = Math.PI / 2 - altRad;
+
+  const WinterSnowLayer = L.GridLayer.extend({
+    createTile(coords: L.Coords, done: (err: Error | undefined, tile: HTMLElement) => void) {
+      const canvas = document.createElement('canvas');
+      canvas.width = TILE;
+      canvas.height = TILE;
+
+      if (coords.z < 9) {
+        setTimeout(() => done(undefined, canvas), 0);
+        return canvas;
+      }
+
+      const n = 128;
+      buildElevationGrid(coords.z, coords.x, coords.y, n)
+        .then(grid => {
+          const ctx = canvas.getContext('2d');
+          if (grid && ctx) {
+            const cellM = Math.max(0.5, getCellMeters(coords.z, coords.y, n));
+            const off = document.createElement('canvas');
+            off.width = n;
+            off.height = n;
+            const octx = off.getContext('2d');
+            if (octx) {
+              const img = octx.createImageData(n, n);
+              const d = img.data;
+              const w = n + 1;
+              for (let j = 0; j < n; j++) {
+                const jm = Math.max(0, j - 1);
+                const jp = Math.min(n, j + 1);
+                const dySpan = (jp - jm) * cellM;
+                for (let i = 0; i < n; i++) {
+                  const im = Math.max(0, i - 1);
+                  const ip = Math.min(n, i + 1);
+                  const dxSpan = (ip - im) * cellM;
+                  const ele = grid[j * w + i];
+                  const dzdx = (grid[j * w + ip] - grid[j * w + im]) / dxSpan;
+                  const dzdy = (grid[jp * w + i] - grid[jm * w + i]) / dySpan;
+                  const grad = Math.hypot(dzdx, dzdy);
+                  const slopeRad = Math.atan(grad);
+                  const slopeDeg = (slopeRad * 180) / Math.PI;
+                  const aspectGeoRad = Math.atan2(-dzdx, dzdy); // 0=N, PI=S
+                  const aspectHill = Math.atan2(dzdy, -dzdx);
+                  const shade = Math.max(
+                    0,
+                    Math.min(
+                      1,
+                      Math.cos(zenithRad) * Math.cos(slopeRad) +
+                        Math.sin(zenithRad) * Math.sin(slopeRad) * Math.cos(azRad - aspectHill)
+                    )
+                  );
+
+                  // Limite neve modulato dall'esposizione: più basso a Nord (~1350m), più alto a Sud (~1750m)
+                  const snowline = 1550 - 200 * Math.cos(aspectGeoRad);
+                  const eleFactor = Math.max(0, Math.min(1, (ele - snowline) / 260));
+                  const p = (j * n + i) * 4;
+
+                  if (eleFactor > 0.02) {
+                    // Pareti verticali >44° scaricano neve lasciando intravedere la roccia
+                    const slopeRetention = Math.max(0, Math.min(1, (58 - slopeDeg) / 14));
+                    const snowAlpha = eleFactor * slopeRetention * 0.9;
+                    if (snowAlpha > 0.02) {
+                      // Neve bianca brillante al sole, azzurro-ghiaccio sui versanti in ombra
+                      const lit = Math.pow(shade, 0.75);
+                      d[p] = Math.round(176 + lit * 76);
+                      d[p + 1] = Math.round(202 + lit * 52);
+                      d[p + 2] = Math.round(230 + lit * 25);
+                      d[p + 3] = Math.round(snowAlpha * 255);
+                      continue;
+                    }
+                  }
+
+                  // Sotto il limite neve o su pareti rocciose: leggero rilievo 3D per staccare creste e valli
+                  if (shade < 0.65) {
+                    const darkness = (0.65 - shade) / 0.65;
+                    d[p] = 15;
+                    d[p + 1] = 28;
+                    d[p + 2] = 48;
+                    d[p + 3] = Math.round(darkness * 85);
+                  }
+                }
+              }
+              octx.putImageData(img, 0, 0);
+              ctx.imageSmoothingEnabled = true;
+              ctx.drawImage(off, 0, 0, TILE, TILE);
+            }
+          }
+          done(undefined, canvas);
+        })
+        .catch(() => done(undefined, canvas));
+      return canvas;
+    },
+  });
+
+  return new (WinterSnowLayer as any)({
+    tileSize: TILE,
+    zIndex: opts.zIndex ?? 2,
+    minZoom: 9,
+    maxZoom: 19,
+    keepBuffer: 4,
+    updateWhenZooming: false,
+    updateWhenIdle: true,
+    className: 'winter-snow-layer',
+    pane: 'tilePane',
+  }) as L.GridLayer;
+};

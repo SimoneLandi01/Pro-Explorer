@@ -144,6 +144,7 @@ import {
   createSlopeAngleLayer,
   createAspectLayer,
   createHillshadeLayer,
+  createWinterSnowLayer,
 } from './services/contourLayer.ts';
 import { POI, POIType, Exposure, SignalStrength } from './types.ts';
 
@@ -3829,7 +3830,7 @@ ${trkptsXml}
         })
       ).addTo(mapRef.current); 
     } else if (mapStyle === 'satellite_winter') {
-      // Satellite Invernale: Ortofoto con contrasto alpino + Hillshading 3D + Curve di livello + Toponimi
+      // Satellite Invernale: Ortofoto + Manto Nevoso 3D dal DEM (modulato per quota, esposizione N/S e pareti rocciose) + Curve di livello + Toponimi
       attachOfflineCacheFallback(
         L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
           ...smoothTileOpts,
@@ -3839,9 +3840,9 @@ ${trkptsXml}
           zIndex: 1,
         })
       ).addTo(mapRef.current);
-      hillshadeLayerRef.current = createHillshadeLayer({ zIndex: 2 }).addTo(mapRef.current);
+      hillshadeLayerRef.current = createWinterSnowLayer({ zIndex: 2 }).addTo(mapRef.current);
       if (showContours) {
-        contourLayerRef.current = createContourLayer({ zIndex: 3, theme: 'dark' }).addTo(mapRef.current);
+        contourLayerRef.current = createContourLayer({ zIndex: 3, theme: 'winter' }).addTo(mapRef.current);
       }
       attachOfflineCacheFallback(
         L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}', {
