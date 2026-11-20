@@ -72,8 +72,8 @@ export const analyzeLocationPhysics = async (lat: number, lng: number): Promise<
     const lats = coords.map(c => c.lat).join(',');
     const lngs = coords.map(c => c.lng).join(',');
     
-    // Expanded Weather Query with HOURLY DATA
-    const weatherUrl = `${WEATHER_API}?latitude=${lat}&longitude=${lng}&current=temperature_2m,relative_humidity_2m,apparent_temperature,precipitation_probability,weather_code,surface_pressure,wind_speed_10m,wind_direction_10m,wind_gusts_10m,visibility,snow_depth,snowfall,cloud_cover,dew_point_2m&daily=sunrise,sunset,uv_index_max&hourly=temperature_2m,weather_code,precipitation_probability,wind_speed_10m,freezing_level_height&forecast_days=2`;
+    // Expanded Weather Query with HOURLY DATA & local timezone=auto (evita scarto UTC su alba/tramonto e orarie)
+    const weatherUrl = `${WEATHER_API}?latitude=${lat}&longitude=${lng}&current=temperature_2m,relative_humidity_2m,apparent_temperature,precipitation_probability,weather_code,surface_pressure,wind_speed_10m,wind_direction_10m,wind_gusts_10m,visibility,snow_depth,snowfall,cloud_cover,dew_point_2m&daily=sunrise,sunset,uv_index_max&hourly=temperature_2m,weather_code,precipitation_probability,wind_speed_10m,freezing_level_height&forecast_days=2&timezone=auto`;
     const airQualityUrl = `${AIR_QUALITY_API}?latitude=${lat}&longitude=${lng}&current=european_aqi`;
 
     const [eleRes, weatherRes, aqiRes] = await Promise.all([

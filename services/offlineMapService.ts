@@ -19,7 +19,7 @@ import { buildTerrariumUrl, TERRARIUM_HOST } from './contourLayer.ts';
 export const TILE_CACHE_NAME = 'mountpro-tiles-v1-offline';
 const OFFLINE_PACKAGES_DB_KEY = 'offline_map_packages_v1';
 
-export type OfflineMapStyle = 'standard' | 'topo' | 'satellite' | 'hybrid';
+export type OfflineMapStyle = 'standard' | 'winter' | 'topo' | 'satellite' | 'hybrid';
 
 export type AlpineMacroZone =
   | 'Tutte'
@@ -82,6 +82,19 @@ export interface OfflineDownloadProgress {
 
 // Metadati descrittivi chiari per identificare immediatamente il tipo di mappa scaricata o da scaricare
 export const getOfflineMapStyleMeta = (style: OfflineMapStyle) => {
+  if (style === 'winter') {
+    return {
+      id: 'winter' as const,
+      shortLabel: 'Invernale / Scialpinismo',
+      badgeTitle: 'MAPPA INVERNALE & SCIALPINISMO (NEVE + PENDENZE)',
+      fullLabel: 'Invernale / Neve (Curve + DEM Pendenze >30° + Piste OpenSnowMap)',
+      layersSummary: 'Base Invernale chiara + DEM 3D (Isoipse, Pendenze >30°, Esposizione) + Itinerari Sci OpenSnowMap',
+      accentText: 'text-cyan-300',
+      accentBg: 'bg-cyan-950/50',
+      accentBorder: 'border-cyan-500/40',
+      buttonActive: 'bg-cyan-600 text-white border-cyan-500',
+    };
+  }
   if (style === 'topo') {
     return {
       id: 'topo' as const,
@@ -315,6 +328,16 @@ export const getTileUrlsForCoord = (z: number, x: number, y: number, style: Offl
   if (style === 'standard') {
     const urls = [`https://a.tile.openstreetmap.org/${z}/${x}/${y}.png`];
     // Tasselli DEM per le Curve di Livello offline (Z10–Z12: il layer isoipse li riusa con sovracampionamento ai zoom superiori)
+    if (z >= 10 && z <= 12) {
+      urls.push(buildTerrariumUrl(z, x, y));
+    }
+    return urls;
+  }
+  if (style === 'winter') {
+    const urls = [
+      `https://a.tile.openstreetmap.org/${z}/${x}/${y}.png`,
+      `https://tiles.opensnowmap.org/pistes/${z}/${x}/${y}.png`,
+    ];
     if (z >= 10 && z <= 12) {
       urls.push(buildTerrariumUrl(z, x, y));
     }

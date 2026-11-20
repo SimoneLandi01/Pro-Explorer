@@ -139,7 +139,12 @@ import {
   BatteryCharging
 } from 'lucide-react';
 import L from 'leaflet';
-import { createContourLayer } from './services/contourLayer.ts';
+import {
+  createContourLayer,
+  createSlopeAngleLayer,
+  createAspectLayer,
+  createHillshadeLayer,
+} from './services/contourLayer.ts';
 import { POI, POIType, Exposure, SignalStrength } from './types.ts';
 
 // --- [LOCKED FEATURE] UTILS & GEOMETRY ---
@@ -1386,7 +1391,7 @@ ${wptsXml}
   const [isSearchingArea, setIsSearchingArea] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [isGlobalSearching, setIsGlobalSearching] = useState(false);
-  const [mapStyle, setMapStyle] = useState<'standard' | 'topo' | 'satellite' | 'hybrid'>(() => {
+  const [mapStyle, setMapStyle] = useState<'standard' | 'winter' | 'topo' | 'satellite' | 'hybrid'>(() => {
     const initSettings = loadUserSettings();
     // Lo stile separato "topo" (OpenTopoMap) è stato sostituito dalle Curve di Livello integrate in OSM Standard
     const normalize = (s: any) => (s === 'topo' || !s ? 'standard' : s);
@@ -1396,7 +1401,7 @@ ${wptsXml}
     }
     return normalize(initSettings.defaultMapStyle);
   });
-  // --- [MODULAR FEATURE 7] Curve di livello sovrapposte a OSM Standard (attive di default, preferenza salvata) ---
+  // --- [MODULAR FEATURE 7 & 8] Curve di livello + Strati Invernali & Scialpinismo ---
   const [showContours, setShowContours] = useState<boolean>(() => {
     try {
       return localStorage.getItem('mountpro_contours_v1') !== '0';
@@ -1404,12 +1409,44 @@ ${wptsXml}
       return true;
     }
   });
-  useEffect(() => {
+  const [showSlopeAngles, setShowSlopeAngles] = useState<boolean>(() => {
     try {
-      localStorage.setItem('mountpro_contours_v1', showContours ? '1' : '0');
-    } catch {}
+      return localStorage.getItem('mountpro_slopes_v1') === '1';
+    } catch {
+      return false;
+    }
+  });
+  const [showAspect, setShowAspect] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('mountpro_aspect_v1') === '1';
+    } catch {
+      return false;
+    }
+  });
+  const [showSkiPistes, setShowSkiPistes] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('mountpro_skipistes_v1') === '1';
+    } catch {
+      return false;
+    }
+  });
+  useEffect(() => {
+    try { localStorage.setItem('mountpro_contours_v1', showContours ? '1' : '0'); } catch {}
   }, [showContours]);
+  useEffect(() => {
+    try { localStorage.setItem('mountpro_slopes_v1', showSlopeAngles ? '1' : '0'); } catch {}
+  }, [showSlopeAngles]);
+  useEffect(() => {
+    try { localStorage.setItem('mountpro_aspect_v1', showAspect ? '1' : '0'); } catch {}
+  }, [showAspect]);
+  useEffect(() => {
+    try { localStorage.setItem('mountpro_skipistes_v1', showSkiPistes ? '1' : '0'); } catch {}
+  }, [showSkiPistes]);
   const contourLayerRef = useRef<L.GridLayer | null>(null);
+  const hillshadeLayerRef = useRef<L.GridLayer | null>(null);
+  const slopeLayerRef = useRef<L.GridLayer | null>(null);
+  const aspectLayerRef = useRef<L.GridLayer | null>(null);
+  const skiPistesLayerRef = useRef<L.TileLayer | null>(null);
   const [isLayersMenuOpen, setIsLayersMenuOpen] = useState(false);
 
   // --- [MODULAR FEATURE 5] CENTRO MAPPE OFFLINE (STILE KOMOOT / MAPY.CZ / OSMAND) ---
@@ -3664,10 +3701,26 @@ ${trkptsXml}
         mapRef.current?.removeLayer(layer); 
       } 
     }); 
-    // Rimuove lo strato Curve di Livello precedente (GridLayer, non TileLayer)
+    // Rimuove gli strati DEM/Invernali precedenti (GridLayer / overlay)
     if (contourLayerRef.current) {
       mapRef.current.removeLayer(contourLayerRef.current);
       contourLayerRef.current = null;
+    }
+    if (hillshadeLayerRef.current) {
+      mapRef.current.removeLayer(hillshadeLayerRef.current);
+      hillshadeLayerRef.current = null;
+    }
+    if (slopeLayerRef.current) {
+      mapRef.current.removeLayer(slopeLayerRef.current);
+      slopeLayerRef.current = null;
+    }
+    if (aspectLayerRef.current) {
+      mapRef.current.removeLayer(aspectLayerRef.current);
+      aspectLayerRef.current = null;
+    }
+    if (skiPistesLayerRef.current) {
+      mapRef.current.removeLayer(skiPistesLayerRef.current);
+      skiPistesLayerRef.current = null;
     }
 
     // In modalità offline o con pacchetti scaricati, maxNativeZoom=16 con maxZoom=19 consente a Leaflet
@@ -3718,7 +3771,22 @@ ${trkptsXml}
       ).addTo(mapRef.current); 
       // Curve di livello (isoipse) calcolate dal DEM open-data, sovrapposte alla mappa OSM Standard
       if (showContours) {
-        contourLayerRef.current = createContourLayer({ zIndex: 2 }).addTo(mapRef.current);
+        contourLayerRef.current = createContourLayer({ zIndex: 2, theme: 'dark' }).addTo(mapRef.current);
+      }
+    } else if (mapStyle === 'winter') {
+      // Base Invernale / Neve ad alta leggibilità al sole + Hillshading 3D + Curve di livello blu
+      attachOfflineCacheFallback(
+        L.tileLayer('https://a.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+          ...smoothTileOpts,
+          className: 'winter-tiles',
+          maxZoom: 19,
+          zIndex: 1,
+          attribution: '© OpenStreetMap',
+        })
+      ).addTo(mapRef.current);
+      hillshadeLayerRef.current = createHillshadeLayer({ zIndex: 2 }).addTo(mapRef.current);
+      if (showContours) {
+        contourLayerRef.current = createContourLayer({ zIndex: 3, theme: 'winter' }).addTo(mapRef.current);
       }
     } else if (mapStyle === 'topo') {
       // 1. Mappa Topografica con Curve di Livello quotate (Isoipse) e Ombreggiatura Rilievi (OpenTopoMap)
@@ -3800,7 +3868,27 @@ ${trkptsXml}
         })
       ).addTo(mapRef.current); 
     }
-  }, [mapStyle, isMapReady, isOffline, showContours]);
+
+    // --- [MODULAR FEATURE 8] OVERLAY INVERNALI & SCIALPINISMO (SOVRAPPOSTI A QUALSIASI MAPPA BASE) ---
+    if (showSlopeAngles) {
+      slopeLayerRef.current = createSlopeAngleLayer({ zIndex: 6 }).addTo(mapRef.current);
+    }
+    if (showAspect) {
+      aspectLayerRef.current = createAspectLayer({ zIndex: 6 }).addTo(mapRef.current);
+    }
+    if (showSkiPistes) {
+      skiPistesLayerRef.current = attachOfflineCacheFallback(
+        L.tileLayer('https://tiles.opensnowmap.org/pistes/{z}/{x}/{y}.png', {
+          ...smoothTileOpts,
+          maxNativeZoom: isOffline ? 16 : 17,
+          maxZoom: 19,
+          zIndex: 7,
+          opacity: 0.9,
+          attribution: '© OpenSnowMap',
+        })
+      ).addTo(mapRef.current);
+    }
+  }, [mapStyle, isMapReady, isOffline, showContours, showSlopeAngles, showAspect, showSkiPistes]);
   
   const updateMapClusters = useCallback(() => {
     if (!mapRef.current || !isMapReady || viewMode !== 'map') return;
@@ -6142,6 +6230,35 @@ ${trkptsXml}
                       </button>
                     )}
                     <button
+                      onClick={() => setMapStyle('winter')}
+                      className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-xs transition-colors cursor-pointer ${
+                        mapStyle === 'winter'
+                          ? 'bg-cyan-500/15 text-cyan-300 border border-cyan-500/40 font-medium'
+                          : 'text-zinc-300 hover:bg-zinc-800/60 border border-transparent'
+                      }`}
+                    >
+                      <span className="flex items-center gap-1.5">
+                        <Snowflake size={12} className="text-cyan-400" />
+                        Invernale / Neve (3D)
+                      </span>
+                      {mapStyle === 'winter' && <span className="w-1.5 h-1.5 rounded-full bg-cyan-400" />}
+                    </button>
+                    {mapStyle === 'winter' && (
+                      <button
+                        onClick={() => setShowContours(prev => !prev)}
+                        className="w-full flex items-center justify-between pl-5 pr-2.5 py-1.5 rounded-lg text-[11px] text-zinc-300 hover:bg-zinc-800/60 transition-colors cursor-pointer"
+                        title="Mostra o nascondi le curve di livello sulla mappa Invernale"
+                      >
+                        <span className="flex items-center gap-2">
+                          <Mountain size={12} className={showContours ? 'text-cyan-400' : 'text-zinc-500'} />
+                          Curve di livello
+                        </span>
+                        <span className={`w-7 h-3.5 rounded-full relative transition-colors ${showContours ? 'bg-cyan-500' : 'bg-zinc-700'}`}>
+                          <span className={`absolute top-0.5 w-2.5 h-2.5 bg-white rounded-full transition-all ${showContours ? 'left-4' : 'left-0.5'}`} />
+                        </span>
+                      </button>
+                    )}
+                    <button
                       onClick={() => setMapStyle('satellite')}
                       className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-xs transition-colors cursor-pointer ${
                         mapStyle === 'satellite'
@@ -6163,6 +6280,151 @@ ${trkptsXml}
                       <span>Ibrida (Satellite + Sentieri)</span>
                       {mapStyle === 'hybrid' && <span className="w-1.5 h-1.5 rounded-full bg-orange-500" />}
                     </button>
+                  </div>
+
+                  {/* --- [MODULAR FEATURE 8] SEZIONE INVERNO & SCIALPINISMO --- */}
+                  <div className="pt-2 border-t border-zinc-800/80 mb-2.5 space-y-1.5">
+                    <div className="flex items-center justify-between px-1">
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-cyan-400 flex items-center gap-1">
+                        <Snowflake size={11} /> Inverno & Scialpinismo
+                      </span>
+                    </div>
+
+                    {/* Preset Rapido 1-Tap Modalità Scialpinismo */}
+                    {(() => {
+                      const isSkimoActive =
+                        mapStyle === 'winter' && showContours && showSlopeAngles && showSkiPistes;
+                      return (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (isSkimoActive) {
+                              setMapStyle('standard');
+                              setShowSlopeAngles(false);
+                              setShowSkiPistes(false);
+                              showToast('Modalità Scialpinismo disattivata');
+                            } else {
+                              setMapStyle('winter');
+                              setShowContours(true);
+                              setShowSlopeAngles(true);
+                              setShowSkiPistes(true);
+                              setShowAspect(false);
+                              showToast('Modalità Scialpinismo attiva: Neve 3D + Pendenze >30° + OpenSnowMap');
+                            }
+                          }}
+                          className={`w-full py-1.5 px-2.5 rounded-xl text-[11px] font-bold border flex items-center justify-between transition-all cursor-pointer ${
+                            isSkimoActive
+                              ? 'bg-cyan-600/25 border-cyan-400 text-cyan-200 shadow'
+                              : 'bg-cyan-950/40 hover:bg-cyan-900/40 border-cyan-500/35 text-cyan-300'
+                          }`}
+                        >
+                          <span className="flex items-center gap-1.5">
+                            <Snowflake size={12} />
+                            Modalità Scialpinismo
+                          </span>
+                          <span className={`text-[9px] uppercase px-1.5 py-0.5 rounded font-mono ${isSkimoActive ? 'bg-cyan-500 text-zinc-950' : 'bg-zinc-800 text-zinc-400'}`}>
+                            {isSkimoActive ? 'ON' : '1-Tap'}
+                          </span>
+                        </button>
+                      );
+                    })()}
+
+                    {/* Overlay Pendenze Valanghive >30° */}
+                    <button
+                      type="button"
+                      onClick={() => setShowSlopeAngles(prev => !prev)}
+                      className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-xs transition-colors cursor-pointer ${
+                        showSlopeAngles
+                          ? 'bg-amber-500/15 text-amber-300 border border-amber-500/35'
+                          : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/50 border border-transparent'
+                      }`}
+                    >
+                      <span className="flex items-center gap-1.5">
+                        <Activity size={13} className={showSlopeAngles ? 'text-amber-400' : 'text-zinc-500'} />
+                        Pendenze &gt;30°
+                      </span>
+                      <span className={`w-7 h-3.5 rounded-full relative transition-colors ${showSlopeAngles ? 'bg-amber-500' : 'bg-zinc-700'}`}>
+                        <span className={`absolute top-0.5 w-2.5 h-2.5 bg-white rounded-full transition-all ${showSlopeAngles ? 'left-4' : 'left-0.5'}`} />
+                      </span>
+                    </button>
+                    {showSlopeAngles && (
+                      <div className="grid grid-cols-4 gap-1 px-1.5 pb-1 text-[9px] font-mono text-zinc-300">
+                        <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-yellow-400" />30°</span>
+                        <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-orange-500" />35°</span>
+                        <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-red-500" />40°</span>
+                        <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-purple-500" />45°+</span>
+                      </div>
+                    )}
+
+                    {/* Overlay Esposizione Versanti (Aspect Map) */}
+                    <button
+                      type="button"
+                      onClick={() => setShowAspect(prev => !prev)}
+                      className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-xs transition-colors cursor-pointer ${
+                        showAspect
+                          ? 'bg-indigo-500/15 text-indigo-300 border border-indigo-500/35'
+                          : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/50 border border-transparent'
+                      }`}
+                    >
+                      <span className="flex items-center gap-1.5">
+                        <Compass size={13} className={showAspect ? 'text-indigo-400' : 'text-zinc-500'} />
+                        Esposizione Versanti
+                      </span>
+                      <span className={`w-7 h-3.5 rounded-full relative transition-colors ${showAspect ? 'bg-indigo-500' : 'bg-zinc-700'}`}>
+                        <span className={`absolute top-0.5 w-2.5 h-2.5 bg-white rounded-full transition-all ${showAspect ? 'left-4' : 'left-0.5'}`} />
+                      </span>
+                    </button>
+                    {showAspect && (
+                      <div className="grid grid-cols-4 gap-1 px-1.5 pb-1 text-[9px] font-mono text-zinc-300">
+                        <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-blue-600" />N</span>
+                        <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-teal-500" />E</span>
+                        <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-yellow-400" />S</span>
+                        <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-violet-500" />O</span>
+                      </div>
+                    )}
+
+                    {/* Overlay Piste, Skitour & Ciaspole (OpenSnowMap) */}
+                    <button
+                      type="button"
+                      onClick={() => setShowSkiPistes(prev => !prev)}
+                      className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-xs transition-colors cursor-pointer ${
+                        showSkiPistes
+                          ? 'bg-sky-500/15 text-sky-300 border border-sky-500/35'
+                          : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/50 border border-transparent'
+                      }`}
+                    >
+                      <span className="flex items-center gap-1.5">
+                        <Route size={13} className={showSkiPistes ? 'text-sky-400' : 'text-zinc-500'} />
+                        Skitour, Ciaspole & Piste
+                      </span>
+                      <span className={`w-7 h-3.5 rounded-full relative transition-colors ${showSkiPistes ? 'bg-sky-500' : 'bg-zinc-700'}`}>
+                        <span className={`absolute top-0.5 w-2.5 h-2.5 bg-white rounded-full transition-all ${showSkiPistes ? 'left-4' : 'left-0.5'}`} />
+                      </span>
+                    </button>
+
+                    {/* Link rapidi Bollettino Valanghe */}
+                    <div className="grid grid-cols-2 gap-1.5 pt-1">
+                      <a
+                        href="https://avalanche.report/bulletin/latest"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="py-1.5 px-2 rounded-lg bg-zinc-800/80 hover:bg-zinc-800 border border-zinc-700/70 text-[10px] font-semibold text-zinc-200 flex items-center justify-center gap-1 transition-colors"
+                        title="Bollettino Valanghe Euregio / Alpi (Avalanche.report)"
+                      >
+                        <ArrowUpRight size={11} className="text-amber-400 shrink-0" />
+                        <span className="truncate">Euregio Val.</span>
+                      </a>
+                      <a
+                        href="https://bollettini.aineva.it/"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="py-1.5 px-2 rounded-lg bg-zinc-800/80 hover:bg-zinc-800 border border-zinc-700/70 text-[10px] font-semibold text-zinc-200 flex items-center justify-center gap-1 transition-colors"
+                        title="Bollettino Valanghe AINEVA Italia"
+                      >
+                        <ArrowUpRight size={11} className="text-cyan-400 shrink-0" />
+                        <span className="truncate">AINEVA</span>
+                      </a>
+                    </div>
                   </div>
 
                   <div className="pt-2 border-t border-zinc-800/80 mb-2.5 space-y-2">
@@ -7652,9 +7914,10 @@ ${trkptsXml}
                     placeholder="Nome pacchetto (es. Val di Fassa / Tofane)"
                     className="flex-1 h-10 bg-zinc-950 border border-zinc-800 rounded-xl px-3 text-xs text-zinc-100 placeholder:text-zinc-500 focus:border-orange-500 outline-none"
                   />
-                  <div className="grid grid-cols-3 gap-1 bg-zinc-950 p-1 rounded-xl border border-zinc-800 shrink-0">
+                  <div className="grid grid-cols-4 gap-1 bg-zinc-950 p-1 rounded-xl border border-zinc-800 shrink-0">
                     {([
                       { id: 'standard', label: 'OSM' },
+                      { id: 'winter', label: 'Neve' },
                       { id: 'satellite', label: 'Sat' },
                       { id: 'hybrid', label: 'Ibrida' },
                     ] as const).map(st => (
@@ -7826,6 +8089,9 @@ ${trkptsXml}
                 <span className="hidden md:inline text-orange-400">
                   OSM: {savedOfflinePackages.filter(p => p.mapStyle === 'standard').length}
                 </span>
+                <span className="hidden md:inline text-cyan-300">
+                  Neve: {savedOfflinePackages.filter(p => p.mapStyle === 'winter').length}
+                </span>
                 <span className="hidden md:inline text-sky-400">
                   Sat: {savedOfflinePackages.filter(p => p.mapStyle === 'satellite').length}
                 </span>
@@ -7982,6 +8248,10 @@ ${trkptsXml}
                               label: `OSM Standard (${savedOfflinePackages.filter(p => p.mapStyle === 'standard').length})`,
                             },
                             {
+                              id: 'winter',
+                              label: `Invernale / Neve (${savedOfflinePackages.filter(p => p.mapStyle === 'winter').length})`,
+                            },
+                            {
                               id: 'satellite',
                               label: `Satellite Puro (${savedOfflinePackages.filter(p => p.mapStyle === 'satellite').length})`,
                             },
@@ -8018,7 +8288,7 @@ ${trkptsXml}
                             });
                             const styleMeta = getOfflineMapStyleMeta(pkg.mapStyle);
                             const baseRegId = pkg.baseRegionId || pkg.id.split('__')[0];
-                            const otherStyles = (['standard', 'satellite', 'hybrid'] as const).filter(
+                            const otherStyles = (['standard', 'winter', 'satellite', 'hybrid'] as const).filter(
                               s => s !== pkg.mapStyle
                             );
 
@@ -8282,7 +8552,7 @@ ${trkptsXml}
                                 Scegli il tipo di mappa da scaricare:
                               </div>
 
-                              {(['standard', 'satellite', 'hybrid'] as const).map(styleKey => {
+                              {(['standard', 'winter', 'satellite', 'hybrid'] as const).map(styleKey => {
                                 const stMeta = getOfflineMapStyleMeta(styleKey);
                                 const stEst = estimateOfflinePackageStats(region.bounds, styleKey);
                                 const pkgId = buildRegionPackageId(region.id, styleKey);
@@ -8317,6 +8587,8 @@ ${trkptsXml}
                                       <div className="text-[10px] text-zinc-400 truncate">
                                         {styleKey === 'standard'
                                           ? 'OSM Standard + Curve di livello (isoipse)'
+                                          : styleKey === 'winter'
+                                          ? 'Base Neve 3D + Curve + DEM Pendenze >30° + Piste OpenSnowMap'
                                           : styleKey === 'satellite'
                                           ? 'Ortofoto Satellitare pura + Toponimi vette'
                                           : 'Ortofoto Satellitare + Tracciati Sentieri CAI'}
@@ -9056,10 +9328,11 @@ ${trkptsXml}
                       <div className="text-[10px] font-bold uppercase text-zinc-500">
                         Livello Mappa Predefinito
                       </div>
-                      <div className="grid grid-cols-3 gap-1.5">
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
                         {(
                           [
                             { id: 'standard', label: 'OSM' },
+                            { id: 'winter', label: 'Neve 3D' },
                             { id: 'satellite', label: 'Satellite' },
                             { id: 'hybrid', label: 'Ibrida' },
                           ] as const

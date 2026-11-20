@@ -22,7 +22,7 @@ export interface UserAppSettings {
   bodyWeightKg: number;
   backpackWeightKg: number;
   forceOfflineMode: boolean;
-  defaultMapStyle: 'standard' | 'topo' | 'satellite' | 'hybrid';
+  defaultMapStyle: 'standard' | 'winter' | 'topo' | 'satellite' | 'hybrid';
   rememberMapPositionOnStartup: boolean;
   rememberFiltersOnStartup: boolean;
   autoSaveMapPosition: boolean;
@@ -35,7 +35,7 @@ export interface SavedStartupMapState {
   lat: number;
   lng: number;
   zoom: number;
-  mapStyle?: 'standard' | 'topo' | 'satellite' | 'hybrid';
+  mapStyle?: 'standard' | 'winter' | 'topo' | 'satellite' | 'hybrid';
 }
 
 export interface SavedStartupFiltersState {
@@ -198,6 +198,7 @@ export const loadSavedMapStartupState = (): SavedStartupMapState | null => {
         lng: parsed.lng,
         zoom: parsed.zoom,
         mapStyle:
+          parsed.mapStyle === 'winter' ||
           parsed.mapStyle === 'topo' ||
           parsed.mapStyle === 'satellite' ||
           parsed.mapStyle === 'hybrid'

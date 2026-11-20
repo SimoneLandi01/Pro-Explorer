@@ -1,4 +1,4 @@
-const APP_CACHE_NAME = 'mountpro-app-v13-reticle-signal';
+const APP_CACHE_NAME = 'mountpro-app-v14-winter-skimo';
 const TILE_CACHE_NAME = 'mountpro-tiles-v1-offline';
 
 const ASSETS_TO_CACHE = [
@@ -30,6 +30,7 @@ const OFFLINE_OVERLAY_TILE_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width=
 function createFallbackTileResponse(urlStr) {
   const isOverlay =
     urlStr.includes('waymarkedtrails.org') ||
+    urlStr.includes('opensnowmap.org') ||
     urlStr.includes('rainviewer.com') ||
     urlStr.includes('/Reference/');
   const svg = isOverlay ? OFFLINE_OVERLAY_TILE_SVG : OFFLINE_BASE_TILE_SVG;
@@ -93,6 +94,7 @@ self.addEventListener('fetch', (event) => {
     (url.hostname.includes('amazonaws.com') && url.pathname.includes('/elevation-tiles-prod/')) ||
     url.hostname.includes('arcgisonline.com') ||
     url.hostname.includes('waymarkedtrails.org') ||
+    url.hostname.includes('opensnowmap.org') ||
     url.hostname.includes('rainviewer.com')
   ) {
     const canonicalTileUrl = url.hostname.endsWith('.tile.openstreetmap.org')
