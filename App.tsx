@@ -2128,10 +2128,11 @@ ${wptsXml}
       const insetY = Math.max(0, Math.round((mapSize.y - vh) / 2));
       
       // Margini di sicurezza rigorosi e dinamici in base ai pannelli attivi:
-      const safeTop = insetY + 135;
-      const safeBottom = insetY + (weatherOverlayActive ? 155 : (isTrackPanelOpen ? Math.round(vh * 0.42) : 85));
+      const extraTop = (tourWaypoints.length > 0 ? 52 : 0) + (targetLock ? 48 : 0);
+      const safeTop = insetY + 135 + extraTop;
+      const safeBottom = insetY + (weatherOverlayActive ? 155 : (isTrackPanelOpen ? Math.round(vh * 0.42) : (inspectedLocation ? 125 : 85)));
       const safeLeft = insetX + 24;
-      const safeRight = insetX + 80;
+      const safeRight = insetX + 84;
 
       const computeAndPan = (pt: L.Point) => {
           let dx = 0;
@@ -3488,6 +3489,7 @@ ${trkptsXml}
             setIsWeatherPanelOpen(false); 
             setIsLayersMenuOpen(false);
             setIsTrailsMenuOpen(false);
+            setIsTourPlannerOpen(false);
             setSelectedPoi(null); 
             if (!(targetLockRef.current && inspectedLocationRef.current)) {
               clearInspectedLocation();
@@ -4857,9 +4859,9 @@ ${trkptsXml}
       </aside>
 
       <main className="flex-1 relative h-full w-full">
-        {/* Header Controls */}
-        <header className="absolute top-2.5 left-2.5 right-2.5 sm:top-4 sm:left-4 sm:right-4 z-[2000] flex flex-col gap-1.5 sm:gap-2.5 pointer-events-none">
-           <div className="flex items-center gap-2 w-full max-w-lg mx-auto pointer-events-auto">
+        {/* Header Controls (senza z-index contenitore bloccante, così Ricerca z-7000 e Tour Planner z-4500 stanno sempre sopra ai tasti laterali z-2800) */}
+        <header className="absolute top-2.5 left-2.5 right-2.5 sm:top-4 sm:left-4 sm:right-4 flex flex-col gap-1.5 sm:gap-2.5 pointer-events-none">
+           <div className="relative z-[2900] flex items-center gap-2 w-full max-w-lg mx-auto pointer-events-auto">
              <button onClick={() => setViewMode(v => v === 'list' ? 'map' : 'list')} className="w-11 h-11 bg-zinc-900/95 backdrop-blur border border-zinc-800 rounded-xl flex items-center justify-center shadow-xl text-zinc-300 hover:text-white transition-all shrink-0 cursor-pointer" title={viewMode === 'list' ? 'Passa alla Mappa' : 'Passa alla Lista'}> {viewMode === 'list' ? <MapIcon size={20}/> : <List size={20}/>} </button>
              <div ref={searchContainerRef} className="flex-1 relative shadow-xl">
                <form onSubmit={handleGlobalSearch} className="w-full relative">
@@ -5015,7 +5017,7 @@ ${trkptsXml}
                };
 
                return (
-                 <div className="fixed inset-0 z-[5500] bg-[#141517] text-zinc-100 flex flex-col pointer-events-auto animate-in fade-in duration-150">
+                 <div className="fixed inset-0 z-[7000] bg-[#141517] text-zinc-100 flex flex-col pointer-events-auto animate-in fade-in duration-150">
                    {/* 1. Barra Superiore Stile OsmAnd: Freccia Indietro + Input Largo + X */}
                    <div className="h-14 px-3 border-b border-zinc-800/90 bg-[#1c1d21] flex items-center gap-3 shrink-0">
                      <button
@@ -5264,7 +5266,7 @@ ${trkptsXml}
                          setShowSuggestions(false);
                        }
                      }}
-                     className="fixed bottom-6 right-5 z-[5600] w-14 h-14 rounded-2xl bg-[#4a2e16] hover:bg-[#5c391c] active:scale-95 border border-orange-500/30 text-orange-400 shadow-2xl flex items-center justify-center transition-all cursor-pointer"
+                     className="fixed bottom-6 right-5 z-[7100] w-14 h-14 rounded-2xl bg-[#4a2e16] hover:bg-[#5c391c] active:scale-95 border border-orange-500/30 text-orange-400 shadow-2xl flex items-center justify-center transition-all cursor-pointer"
                      title="Mostra risultati sulla mappa"
                    >
                      <MapIcon size={24} />
@@ -5313,7 +5315,7 @@ ${trkptsXml}
                );
              })()}
           </div>
-          <div className="flex justify-center flex-wrap gap-1.5 animate-in fade-in slide-in-from-top-2 pointer-events-auto max-w-lg mx-auto"> 
+          <div className="relative z-[2900] flex justify-center flex-wrap gap-1.5 animate-in fade-in slide-in-from-top-2 pointer-events-auto max-w-lg mx-auto"> 
              {showFavoritesOnly && (
                <button onClick={() => setShowFavoritesOnly(false)} className="w-7 h-7 bg-red-600/95 hover:bg-red-500 shadow-md rounded-full text-white border border-red-500 flex items-center justify-center cursor-pointer transition-transform active:scale-95" title="Solo preferiti (tocca per rimuovere)">
                  <Heart size={13} className="fill-white"/>
@@ -5344,7 +5346,7 @@ ${trkptsXml}
           </div>
 
           {isSearchingArea && viewMode === 'map' && (
-            <div className="flex justify-center pointer-events-none animate-in fade-in slide-in-from-top-1">
+            <div className="relative z-[2900] flex justify-center pointer-events-none animate-in fade-in slide-in-from-top-1">
               <span className="px-3 py-1 bg-zinc-900/95 backdrop-blur shadow-xl rounded-full text-[11px] font-bold text-orange-400 border border-orange-500/50 flex items-center gap-2">
                 <Loader2 size={12} className="animate-spin"/> Aggiorno mappa...
               </span>
@@ -5352,7 +5354,7 @@ ${trkptsXml}
           )}
 
           {pickingTargetOrigin && viewMode === 'map' && (
-            <div className="pointer-events-auto mx-auto bg-cyan-950/95 backdrop-blur-md border border-cyan-400/70 rounded-full px-3.5 py-1.5 shadow-2xl flex items-center gap-2.5 animate-in fade-in slide-in-from-top-2">
+            <div className="relative z-[2900] pointer-events-auto mx-auto bg-cyan-950/95 backdrop-blur-md border border-cyan-400/70 rounded-full px-3.5 py-1.5 shadow-2xl flex items-center gap-2.5 animate-in fade-in slide-in-from-top-2">
               <Compass size={14} className="text-cyan-400 animate-pulse shrink-0" />
               <span className="text-[11px] font-bold text-cyan-100">
                 Tocca un altro punto sulla mappa per puntarlo
@@ -5394,7 +5396,7 @@ ${trkptsXml}
             );
             const relAngle = (cai.bearingDeg - userHeading + 360) % 360;
             return (
-              <div className="pointer-events-auto mx-auto w-full max-w-md bg-zinc-950/95 backdrop-blur-md border border-cyan-500/50 rounded-2xl px-3 py-2 shadow-2xl flex items-center justify-between gap-2 animate-in fade-in slide-in-from-top-2">
+              <div className="relative z-[2900] pointer-events-auto mx-auto w-full max-w-md bg-zinc-950/95 backdrop-blur-md border border-cyan-500/50 rounded-2xl px-3 py-2 shadow-2xl flex items-center justify-between gap-2 animate-in fade-in slide-in-from-top-2">
                 <button
                   onClick={() => {
                     if (mapRef.current) {
@@ -5455,11 +5457,20 @@ ${trkptsXml}
 
           {/* --- [MODULAR FEATURE 1.3] PIANIFICATORE RAPIDO "AGGIUNGI AL TOUR" HUD & DRAWER --- */}
           {tourWaypoints.length > 0 && (
-            <div className="pointer-events-auto mx-auto w-full max-w-md bg-zinc-950/95 backdrop-blur-md border border-emerald-500/50 rounded-2xl px-3 py-2 shadow-2xl animate-in fade-in slide-in-from-top-2">
+            <div className={`relative ${isTourPlannerOpen ? 'z-[4500]' : 'z-[3100]'} pointer-events-auto mx-auto w-full max-w-md bg-zinc-950/95 backdrop-blur-md border border-emerald-500/50 rounded-2xl px-3 py-2 shadow-2xl animate-in fade-in slide-in-from-top-2`}>
               <div className="flex items-center justify-between gap-2">
                 <button
                   type="button"
-                  onClick={() => setIsTourPlannerOpen(prev => !prev)}
+                  onClick={() =>
+                    setIsTourPlannerOpen(prev => {
+                      const next = !prev;
+                      if (next) {
+                        setIsLayersMenuOpen(false);
+                        setIsTrailsMenuOpen(false);
+                      }
+                      return next;
+                    })
+                  }
                   className="flex items-center gap-2.5 min-w-0 text-left cursor-pointer flex-1"
                   title="Apri / Chiudi dettagli Pianificatore Tour"
                 >
@@ -5515,7 +5526,16 @@ ${trkptsXml}
                   )}
                   <button
                     type="button"
-                    onClick={() => setIsTourPlannerOpen(prev => !prev)}
+                    onClick={() =>
+                      setIsTourPlannerOpen(prev => {
+                        const next = !prev;
+                        if (next) {
+                          setIsLayersMenuOpen(false);
+                          setIsTrailsMenuOpen(false);
+                        }
+                        return next;
+                      })
+                    }
                     className="p-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-300 border border-zinc-800 cursor-pointer"
                     title={isTourPlannerOpen ? 'Comprimi' : 'Espandi tappe'}
                   >
@@ -5778,9 +5798,9 @@ ${trkptsXml}
                  </div>
              )}
 
-             {/* Inspected Arbitrary Map Point Card - Minimale di default con espansione */}
-             {viewMode === 'map' && inspectedLocation && !selectedPoi && !isTrackPanelOpen && (
-               <div className={`absolute left-3 right-[72px] sm:left-4 sm:right-auto ${isInspectedExpanded ? 'sm:w-88 p-3.5' : 'sm:w-72 p-2.5'} z-[3200] bg-zinc-900/95 backdrop-blur-md border border-orange-500/60 rounded-2xl shadow-2xl animate-in fade-in slide-in-from-bottom-4 transition-all duration-200 ${weatherOverlayActive ? 'bottom-[136px]' : 'bottom-4'}`}>
+             {/* Inspected Arbitrary Map Point Card - Minimale di default con espansione (z-3600 sempre sopra i tasti a destra z-2800) */}
+             {viewMode === 'map' && inspectedLocation && !selectedPoi && !isTrackPanelOpen && !customAreaSelecting && (
+               <div className={`absolute left-3 right-[74px] sm:left-4 sm:right-auto ${isInspectedExpanded ? 'sm:w-88 p-3.5' : 'sm:w-72 p-2.5'} z-[3600] bg-zinc-900/95 backdrop-blur-md border border-orange-500/60 rounded-2xl shadow-2xl animate-in fade-in slide-in-from-bottom-4 transition-all duration-200 ${weatherOverlayActive ? 'bottom-[136px]' : 'bottom-4'}`}>
                  {/* Intestazione compatta (tocca coordinate per copiarle negli appunti) */}
                  <div className="flex items-center justify-between gap-2">
                    <div className="flex items-center gap-2 min-w-0">
@@ -6015,7 +6035,7 @@ ${trkptsXml}
 
         {/* Floating Radar Player Bar */}
         {viewMode === 'map' && weatherOverlayActive && !isTrackPanelOpen && (
-          <div className="absolute bottom-4 left-3 right-3 sm:left-1/2 sm:-translate-x-1/2 z-[3000] pointer-events-auto flex flex-col gap-1.5 bg-zinc-900/95 backdrop-blur-md border border-zinc-700/80 rounded-2xl px-3.5 py-2.5 shadow-2xl animate-in fade-in slide-in-from-bottom-2 w-auto sm:min-w-[400px] max-w-lg">
+          <div className="absolute bottom-4 left-3 right-3 sm:left-1/2 sm:-translate-x-1/2 z-[3400] pointer-events-auto flex flex-col gap-1.5 bg-zinc-900/95 backdrop-blur-md border border-zinc-700/80 rounded-2xl px-3.5 py-2.5 shadow-2xl animate-in fade-in slide-in-from-bottom-2 w-auto sm:min-w-[400px] max-w-lg">
             {isRadarLoading ? (
               <div className="flex items-center justify-center gap-2 text-xs font-semibold text-zinc-300 py-1 px-2">
                 <Loader2 size={16} className="animate-spin text-blue-400" />
@@ -6137,7 +6157,7 @@ ${trkptsXml}
         )}
 
         {viewMode === 'map' && (
-          <div className={`absolute right-4 z-[3500] flex flex-col items-end gap-3 pointer-events-auto transition-all duration-300 ${isTrackPanelOpen && tracks.length > 0 && !isTrackPanelExpanded ? 'bottom-[calc(40vh+12px)]' : weatherOverlayActive ? 'bottom-[136px]' : 'bottom-6'}`}>
+          <div className={`absolute right-4 ${isLayersMenuOpen || isTrailsMenuOpen ? 'z-[4600]' : 'z-[2800]'} flex flex-col items-end gap-3 pointer-events-auto transition-all duration-300 ${isTrackPanelOpen && tracks.length > 0 && !isTrackPanelExpanded ? 'bottom-[calc(40vh+12px)]' : customAreaSelecting ? 'bottom-[215px]' : weatherOverlayActive ? 'bottom-[136px]' : 'bottom-6'}`}>
              {/* Pulsante Bussola Dinamico: appare quando la mappa è ruotata e riporta il Nord in alto con animazione fluida */}
              {Math.abs(mapBearing % 360) > 0.5 && (
                <button
@@ -6237,7 +6257,7 @@ ${trkptsXml}
                     </div>
                   </div>
                )}
-               <button onClick={() => { const next = !isTrailsMenuOpen; setIsTrailsMenuOpen(next); if (next) setIsLayersMenuOpen(false); }} className={`w-12 h-12 bg-zinc-900 border ${isTrailsMenuOpen || tracks.length > 0 ? 'border-orange-500 text-orange-500' : 'border-zinc-700 text-zinc-300'} rounded-2xl flex items-center justify-center shadow-lg hover:bg-zinc-800 transition-all cursor-pointer`} title="Tracce GPX"> <Footprints size={22}/> </button>
+               <button onClick={() => { const next = !isTrailsMenuOpen; setIsTrailsMenuOpen(next); if (next) { setIsLayersMenuOpen(false); setIsTourPlannerOpen(false); } }} className={`w-12 h-12 bg-zinc-900 border ${isTrailsMenuOpen || tracks.length > 0 ? 'border-orange-500 text-orange-500' : 'border-zinc-700 text-zinc-300'} rounded-2xl flex items-center justify-center shadow-lg hover:bg-zinc-800 transition-all cursor-pointer`} title="Tracce GPX"> <Footprints size={22}/> </button>
              </div>
              
              <div ref={layersMenuRef} className="relative">
@@ -6558,7 +6578,7 @@ ${trkptsXml}
                   </div>
                 </div>
                )}
-               <button onClick={() => { const next = !isLayersMenuOpen; setIsLayersMenuOpen(next); if (next) setIsTrailsMenuOpen(false); }} className={`w-12 h-12 bg-zinc-900 border ${isLayersMenuOpen ? 'border-orange-500 text-orange-500' : 'border-zinc-700 text-zinc-300'} rounded-2xl flex items-center justify-center shadow-lg hover:bg-zinc-800 transition-all cursor-pointer`} title="Mappa e Livelli"> <Layers size={22}/> </button>
+               <button onClick={() => { const next = !isLayersMenuOpen; setIsLayersMenuOpen(next); if (next) { setIsTrailsMenuOpen(false); setIsTourPlannerOpen(false); } }} className={`w-12 h-12 bg-zinc-900 border ${isLayersMenuOpen ? 'border-orange-500 text-orange-500' : 'border-zinc-700 text-zinc-300'} rounded-2xl flex items-center justify-center shadow-lg hover:bg-zinc-800 transition-all cursor-pointer`} title="Mappa e Livelli"> <Layers size={22}/> </button>
              </div>
             
             <button onClick={handleLocateUser} className={`w-12 h-12 bg-zinc-900 border ${isLocating ? 'border-orange-500' : 'border-zinc-700'} rounded-2xl flex items-center justify-center shadow-lg hover:bg-zinc-800 transition-all text-zinc-200 cursor-pointer`} title="La mia posizione">
@@ -7289,7 +7309,7 @@ ${trkptsXml}
       
       {/* --- [LOCKED FEATURE] DETAIL PANEL (FULL SCREEN) --- */}
       {/* DO NOT MODIFY WITHOUT PERMISSION */}
-      <div ref={detailPanelRef} className={`fixed inset-0 z-[5000] bg-zinc-950 transition-transform duration-300 ease-in-out flex flex-col ${isDetailPanelOpen && selectedPoi ? 'translate-x-0' : 'translate-x-full'}`}>
+      <div ref={detailPanelRef} className={`fixed inset-0 z-[6000] bg-zinc-950 transition-transform duration-300 ease-in-out flex flex-col ${isDetailPanelOpen && selectedPoi ? 'translate-x-0' : 'translate-x-full'}`}>
         
         {/* Full Page Sticky Header */}
         <div className="sticky top-0 z-10 bg-zinc-950/90 backdrop-blur border-b border-zinc-800 p-4 flex items-center justify-between gap-2">
