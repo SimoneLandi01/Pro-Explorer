@@ -1,4 +1,4 @@
-const APP_CACHE_NAME = 'mountpro-app-v7-opentopo';
+const APP_CACHE_NAME = 'mountpro-app-v8-contours';
 const TILE_CACHE_NAME = 'mountpro-tiles-v1-offline';
 
 const ASSETS_TO_CACHE = [
@@ -90,6 +90,7 @@ self.addEventListener('fetch', (event) => {
   if (
     (url.hostname.includes('openstreetmap.org') && url.pathname.endsWith('.png')) ||
     (url.hostname.includes('opentopomap.org') && url.pathname.endsWith('.png')) ||
+    (url.hostname.includes('amazonaws.com') && url.pathname.includes('/elevation-tiles-prod/')) ||
     url.hostname.includes('arcgisonline.com') ||
     url.hostname.includes('waymarkedtrails.org') ||
     url.hostname.includes('rainviewer.com')

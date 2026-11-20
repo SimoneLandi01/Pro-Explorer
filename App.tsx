@@ -139,6 +139,7 @@ import {
   BatteryCharging
 } from 'lucide-react';
 import L from 'leaflet';
+import { createContourLayer } from './services/contourLayer.ts';
 import { POI, POIType, Exposure, SignalStrength } from './types.ts';
 
 // --- [LOCKED FEATURE] UTILS & GEOMETRY ---
@@ -1368,12 +1369,28 @@ ${wptsXml}
   const [isGlobalSearching, setIsGlobalSearching] = useState(false);
   const [mapStyle, setMapStyle] = useState<'standard' | 'topo' | 'satellite' | 'hybrid'>(() => {
     const initSettings = loadUserSettings();
+    // Lo stile separato "topo" (OpenTopoMap) è stato sostituito dalle Curve di Livello integrate in OSM Standard
+    const normalize = (s: any) => (s === 'topo' || !s ? 'standard' : s);
     if (initSettings.autoSaveMapPosition) {
       const savedM = loadSavedMapStartupState();
-      if (savedM?.mapStyle) return savedM.mapStyle;
+      if (savedM?.mapStyle) return normalize(savedM.mapStyle);
     }
-    return initSettings.defaultMapStyle || 'standard';
+    return normalize(initSettings.defaultMapStyle);
   });
+  // --- [MODULAR FEATURE 7] Curve di livello sovrapposte a OSM Standard (attive di default, preferenza salvata) ---
+  const [showContours, setShowContours] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('mountpro_contours_v1') !== '0';
+    } catch {
+      return true;
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem('mountpro_contours_v1', showContours ? '1' : '0');
+    } catch {}
+  }, [showContours]);
+  const contourLayerRef = useRef<L.GridLayer | null>(null);
   const [isLayersMenuOpen, setIsLayersMenuOpen] = useState(false);
 
   // --- [MODULAR FEATURE 5] CENTRO MAPPE OFFLINE (STILE KOMOOT / MAPY.CZ / OSMAND) ---
@@ -3535,6 +3552,11 @@ ${trkptsXml}
         mapRef.current?.removeLayer(layer); 
       } 
     }); 
+    // Rimuove lo strato Curve di Livello precedente (GridLayer, non TileLayer)
+    if (contourLayerRef.current) {
+      mapRef.current.removeLayer(contourLayerRef.current);
+      contourLayerRef.current = null;
+    }
 
     // In modalità offline o con pacchetti scaricati, maxNativeZoom=16 con maxZoom=19 consente a Leaflet
     // di effettuare l'Overzooming continuo fino a zoom 19 usando i tasselli Z15/Z16 salvati in cache.
@@ -3582,6 +3604,10 @@ ${trkptsXml}
           attribution: '© OpenStreetMap'
         })
       ).addTo(mapRef.current); 
+      // Curve di livello (isoipse) calcolate dal DEM open-data, sovrapposte alla mappa OSM Standard
+      if (showContours) {
+        contourLayerRef.current = createContourLayer({ zIndex: 2 }).addTo(mapRef.current);
+      }
     } else if (mapStyle === 'topo') {
       // 1. Mappa Topografica con Curve di Livello quotate (Isoipse) e Ombreggiatura Rilievi (OpenTopoMap)
       attachOfflineCacheFallback(
@@ -3662,7 +3688,7 @@ ${trkptsXml}
         })
       ).addTo(mapRef.current); 
     }
-  }, [mapStyle, isMapReady, isOffline]);
+  }, [mapStyle, isMapReady, isOffline, showContours]);
   
   const updateMapClusters = useCallback(() => {
     if (!mapRef.current || !isMapReady || viewMode !== 'map') return;
@@ -5886,17 +5912,21 @@ ${trkptsXml}
                       <span>OSM Standard</span>
                       {mapStyle === 'standard' && <span className="w-1.5 h-1.5 rounded-full bg-orange-500" />}
                     </button>
-                    <button
-                      onClick={() => setMapStyle('topo')}
-                      className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-xs transition-colors cursor-pointer ${
-                        mapStyle === 'topo'
-                          ? 'bg-amber-500/15 text-amber-300 border border-amber-500/40 font-medium'
-                          : 'text-zinc-300 hover:bg-zinc-800/60 border border-transparent'
-                      }`}
-                    >
-                      <span>Topografica Curve di Livello (OpenTopoMap)</span>
-                      {mapStyle === 'topo' && <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />}
-                    </button>
+                    {mapStyle === 'standard' && (
+                      <button
+                        onClick={() => setShowContours(prev => !prev)}
+                        className="w-full flex items-center justify-between pl-5 pr-2.5 py-1.5 rounded-lg text-[11px] text-zinc-300 hover:bg-zinc-800/60 transition-colors cursor-pointer"
+                        title="Mostra o nascondi le curve di livello (isoipse) sulla mappa OSM Standard"
+                      >
+                        <span className="flex items-center gap-2">
+                          <Mountain size={12} className={showContours ? 'text-amber-400' : 'text-zinc-500'} />
+                          Curve di livello
+                        </span>
+                        <span className={`w-7 h-3.5 rounded-full relative transition-colors ${showContours ? 'bg-amber-500' : 'bg-zinc-700'}`}>
+                          <span className={`absolute top-0.5 w-2.5 h-2.5 bg-white rounded-full transition-all ${showContours ? 'left-4' : 'left-0.5'}`} />
+                        </span>
+                      </button>
+                    )}
                     <button
                       onClick={() => setMapStyle('satellite')}
                       className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-xs transition-colors cursor-pointer ${
@@ -7408,10 +7438,9 @@ ${trkptsXml}
                     placeholder="Nome pacchetto (es. Val di Fassa / Tofane)"
                     className="flex-1 h-10 bg-zinc-950 border border-zinc-800 rounded-xl px-3 text-xs text-zinc-100 placeholder:text-zinc-500 focus:border-orange-500 outline-none"
                   />
-                  <div className="grid grid-cols-4 gap-1 bg-zinc-950 p-1 rounded-xl border border-zinc-800 shrink-0">
+                  <div className="grid grid-cols-3 gap-1 bg-zinc-950 p-1 rounded-xl border border-zinc-800 shrink-0">
                     {([
                       { id: 'standard', label: 'OSM' },
-                      { id: 'topo', label: 'Topo' },
                       { id: 'satellite', label: 'Sat' },
                       { id: 'hybrid', label: 'Ibrida' },
                     ] as const).map(st => (
@@ -7583,9 +7612,6 @@ ${trkptsXml}
                 <span className="hidden md:inline text-orange-400">
                   OSM: {savedOfflinePackages.filter(p => p.mapStyle === 'standard').length}
                 </span>
-                <span className="hidden md:inline text-amber-400">
-                  Topo: {savedOfflinePackages.filter(p => p.mapStyle === 'topo').length}
-                </span>
                 <span className="hidden md:inline text-sky-400">
                   Sat: {savedOfflinePackages.filter(p => p.mapStyle === 'satellite').length}
                 </span>
@@ -7742,10 +7768,6 @@ ${trkptsXml}
                               label: `OSM Standard (${savedOfflinePackages.filter(p => p.mapStyle === 'standard').length})`,
                             },
                             {
-                              id: 'topo',
-                              label: `Topografica Curve (${savedOfflinePackages.filter(p => p.mapStyle === 'topo').length})`,
-                            },
-                            {
                               id: 'satellite',
                               label: `Satellite Puro (${savedOfflinePackages.filter(p => p.mapStyle === 'satellite').length})`,
                             },
@@ -7782,7 +7804,7 @@ ${trkptsXml}
                             });
                             const styleMeta = getOfflineMapStyleMeta(pkg.mapStyle);
                             const baseRegId = pkg.baseRegionId || pkg.id.split('__')[0];
-                            const otherStyles = (['standard', 'topo', 'satellite', 'hybrid'] as const).filter(
+                            const otherStyles = (['standard', 'satellite', 'hybrid'] as const).filter(
                               s => s !== pkg.mapStyle
                             );
 
@@ -8046,7 +8068,7 @@ ${trkptsXml}
                                 Scegli il tipo di mappa da scaricare:
                               </div>
 
-                              {(['standard', 'topo', 'satellite', 'hybrid'] as const).map(styleKey => {
+                              {(['standard', 'satellite', 'hybrid'] as const).map(styleKey => {
                                 const stMeta = getOfflineMapStyleMeta(styleKey);
                                 const stEst = estimateOfflinePackageStats(region.bounds, styleKey);
                                 const pkgId = buildRegionPackageId(region.id, styleKey);
@@ -8080,9 +8102,7 @@ ${trkptsXml}
                                       </div>
                                       <div className="text-[10px] text-zinc-400 truncate">
                                         {styleKey === 'standard'
-                                          ? 'Mappa OSM Standard scura ad alto contrasto'
-                                          : styleKey === 'topo'
-                                          ? 'Curve di livello quotate (Isoipse) + Rilievi + Sentieri CAI'
+                                          ? 'OSM Standard + Curve di livello (isoipse)'
                                           : styleKey === 'satellite'
                                           ? 'Ortofoto Satellitare pura + Toponimi vette'
                                           : 'Ortofoto Satellitare + Tracciati Sentieri CAI'}
@@ -8822,11 +8842,10 @@ ${trkptsXml}
                       <div className="text-[10px] font-bold uppercase text-zinc-500">
                         Livello Mappa Predefinito
                       </div>
-                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
+                      <div className="grid grid-cols-3 gap-1.5">
                         {(
                           [
                             { id: 'standard', label: 'OSM' },
-                            { id: 'topo', label: 'Topo Curve' },
                             { id: 'satellite', label: 'Satellite' },
                             { id: 'hybrid', label: 'Ibrida' },
                           ] as const

@@ -14,6 +14,7 @@ import {
 import { analyzeLocationPhysics } from './analysisService.ts';
 import { REGIONAL_VENETO_TRENTINO_POIS } from './regionalData.ts';
 import { MOCK_POIS } from '../constants.tsx';
+import { buildTerrariumUrl, TERRARIUM_HOST } from './contourLayer.ts';
 
 export const TILE_CACHE_NAME = 'mountpro-tiles-v1-offline';
 const OFFLINE_PACKAGES_DB_KEY = 'offline_map_packages_v1';
@@ -312,7 +313,12 @@ export const calculateBoundsAreaKm2 = (bounds: BoundingBox): number => {
 // Costruisce gli URL canonici dei tasselli per uno specifico stile mappa e coordinata (z, x, y)
 export const getTileUrlsForCoord = (z: number, x: number, y: number, style: OfflineMapStyle): string[] => {
   if (style === 'standard') {
-    return [`https://a.tile.openstreetmap.org/${z}/${x}/${y}.png`];
+    const urls = [`https://a.tile.openstreetmap.org/${z}/${x}/${y}.png`];
+    // Tasselli DEM per le Curve di Livello offline (Z10–Z12: il layer isoipse li riusa con sovracampionamento ai zoom superiori)
+    if (z >= 10 && z <= 12) {
+      urls.push(buildTerrariumUrl(z, x, y));
+    }
+    return urls;
   }
   if (style === 'topo') {
     return [
@@ -577,7 +583,9 @@ export const downloadCompleteOfflinePackage = async (params: {
       try {
         const alreadyCached = tileCache ? await tileCache.match(canonicalUrl) : null;
         if (!alreadyCached) {
-          const req = new Request(networkUrl, { mode: 'no-cors' });
+          // I tasselli DEM delle curve di livello devono essere leggibili dal canvas: richiesta CORS (non opaca)
+          const isDemTile = canonicalUrl.includes(TERRARIUM_HOST);
+          const req = new Request(networkUrl, { mode: isDemTile ? 'cors' : 'no-cors' });
           const res = await fetch(req, { signal: tileAbort.signal });
           if (tileCache && res && (res.status === 200 || res.type === 'opaque')) {
             // Salva sempre con chiave canonicalUrl per match immediato col Service Worker

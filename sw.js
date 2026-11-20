@@ -1,4 +1,4 @@
-const APP_CACHE_NAME = 'mountpro-app-v7-opentopo';
+const APP_CACHE_NAME = 'mountpro-app-v8-contours';
 const TILE_CACHE_NAME = 'mountpro-tiles-v1-offline';
 
 const ASSETS_TO_CACHE = [
@@ -43,7 +43,6 @@ function createFallbackTileResponse(urlStr) {
 }
 
 self.addEventListener('install', (event) => {
-  self.skipWaiting();
   event.waitUntil(
     caches.open(APP_CACHE_NAME).then(async (cache) => {
       for (const asset of ASSETS_TO_CACHE) {
@@ -62,6 +61,7 @@ self.addEventListener('install', (event) => {
       }
     })
   );
+  self.skipWaiting();
 });
 
 self.addEventListener('activate', (event) => {
@@ -85,10 +85,12 @@ self.addEventListener('fetch', (event) => {
   if (event.request.method !== 'GET') return;
   const url = new URL(event.request.url);
 
-  // Strategy 1: Map Tiles (OpenStreetMap, OpenTopoMap, Esri Satellite/Hybrid, Waymarked Trails, RainViewer)
+  // Strategy 1: Map Tiles (OpenStreetMap, OpenTopoMap Curve di Livello, Esri Satellite/Hybrid, Waymarked Trails, RainViewer)
+  // Cache-First con normalizzazione sottodominio OSM/OpenTopoMap (a/b/c -> a), aggiornamento in background e fallback SVG sicuro se offline
   if (
     (url.hostname.includes('openstreetmap.org') && url.pathname.endsWith('.png')) ||
     (url.hostname.includes('opentopomap.org') && url.pathname.endsWith('.png')) ||
+    (url.hostname.includes('amazonaws.com') && url.pathname.includes('/elevation-tiles-prod/')) ||
     url.hostname.includes('arcgisonline.com') ||
     url.hostname.includes('waymarkedtrails.org') ||
     url.hostname.includes('rainviewer.com')
@@ -161,8 +163,6 @@ self.addEventListener('fetch', (event) => {
   }
 
   // Strategy 3: App Shell, JS/TS bundles, CSS, Fonts, Icons -> Network-First con Fallback Cache completo per Offline
-  // Garantisce che online venga sempre eseguito il codice più aggiornato (evitando script stantii in cache)
-  // e che offline l'intera app, inclusi i moduli JS/CSS/Font, venga servita istantaneamente dalla cache locale.
   event.respondWith(
     caches.open(APP_CACHE_NAME).then(async (cache) => {
       try {
