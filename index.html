@@ -111,6 +111,11 @@
             filter: grayscale(28%) brightness(106%) contrast(103%) saturate(72%) hue-rotate(-6deg);
         }
 
+        /* Winter Satellite Filter (toni alpini freddi ad alto contrasto su creste, canali e nevai) */
+        .winter-sat-tiles {
+            filter: saturate(55%) contrast(116%) brightness(108%) hue-rotate(8deg);
+        }
+
         /* Status Animations */
         @keyframes status-pulse {
             0% { transform: scale(0.95); opacity: 0.5; }
@@ -207,7 +212,7 @@
       if ('caches' in window) {
         caches.keys().then(keys => {
           keys.forEach(k => {
-            if (k.startsWith('mountpro-app-v') && k !== 'mountpro-app-v14-winter-skimo') {
+            if (k.startsWith('mountpro-app-v') && k !== 'mountpro-app-v15-winter-sat') {
               console.log('Purging old app cache:', k);
               caches.delete(k);
             }
