@@ -1731,6 +1731,11 @@ ${wptsXml}
       windSpeed?: number;
     } | null;
     isLoadingWeather: boolean;
+    signalEstimate?: {
+      level: SignalStrength;
+      reason: string;
+    } | null;
+    isLoadingSignal?: boolean;
   } | null>(null);
   const inspectedMarkerRef = useRef<L.Marker | null>(null);
   const inspectedLocationRef = useRef<typeof inspectedLocation>(null);
@@ -2292,8 +2297,10 @@ ${wptsXml}
         className: 'custom-poi-marker',
         html: `
           <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke-linecap="round" style="display:block;pointer-events:none;">
-            <path d="M12 3v18M3 12h18" stroke="#000000" stroke-width="5" />
-            <path d="M12 3v18M3 12h18" stroke="#f97316" stroke-width="2.5" />
+            <path d="M12 2.5v4.5M12 17v4.5M2.5 12H7M17 12h4.5" stroke="#000000" stroke-width="4.5" />
+            <circle cx="12" cy="12" r="3" fill="#000000" />
+            <path d="M12 2.5v4.5M12 17v4.5M2.5 12H7M17 12h4.5" stroke="#f97316" stroke-width="2.3" />
+            <circle cx="12" cy="12" r="1.8" fill="#f97316" />
           </svg>
         `,
         iconSize: [24, 24],
@@ -2304,13 +2311,15 @@ ${wptsXml}
       );
     }
 
-    // Croce azzurra con contorno nero sul Target bloccato
+    // Mirino azzurro con contorno nero sul Target bloccato
     const targetCrossIcon = L.divIcon({
       className: 'custom-poi-marker',
       html: `
         <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke-linecap="round" style="display:block;pointer-events:none;">
-          <path d="M12 3v18M3 12h18" stroke="#000000" stroke-width="5.5" />
-          <path d="M12 3v18M3 12h18" stroke="#06b6d4" stroke-width="2.75" />
+          <path d="M12 2.5v4.5M12 17v4.5M2.5 12H7M17 12h4.5" stroke="#000000" stroke-width="4.5" />
+          <circle cx="12" cy="12" r="3" fill="#000000" />
+          <path d="M12 2.5v4.5M12 17v4.5M2.5 12H7M17 12h4.5" stroke="#06b6d4" stroke-width="2.3" />
+          <circle cx="12" cy="12" r="1.8" fill="#06b6d4" />
         </svg>
       `,
       iconSize: [28, 28],
@@ -2918,16 +2927,20 @@ ${trkptsXml}
       isLoadingAltitude: true,
       weather: null,
       isLoadingWeather: true,
+      signalEstimate: null,
+      isLoadingSignal: true,
     });
 
     if (mapRef.current) {
-      // Solo croce arancio con contorno nero centrata esattamente sulle coordinate (iconSize esplicito 28x28 per evitare collasso 0x0)
+      // Mirino arancio con puntino centrale e contorno nero centrato sulle coordinate
       const pinIcon = L.divIcon({
         className: 'custom-poi-marker',
         html: `
           <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke-linecap="round" style="display:block;pointer-events:none;">
-            <path d="M12 3v18M3 12h18" stroke="#000000" stroke-width="5.5" />
-            <path d="M12 3v18M3 12h18" stroke="#f97316" stroke-width="2.75" />
+            <path d="M12 2.5v4.5M12 17v4.5M2.5 12H7M17 12h4.5" stroke="#000000" stroke-width="4.5" />
+            <circle cx="12" cy="12" r="3" fill="#000000" />
+            <path d="M12 2.5v4.5M12 17v4.5M2.5 12H7M17 12h4.5" stroke="#f97316" stroke-width="2.3" />
+            <circle cx="12" cy="12" r="1.8" fill="#f97316" />
           </svg>
         `,
         iconSize: [28, 28],
@@ -2993,6 +3006,25 @@ ${trkptsXml}
         return { ...prev, isLoadingWeather: false };
       });
     }
+
+    // Stima copertura rete cellulare per il punto selezionato
+    analyzeLocationPhysics(lat, lng)
+      .then(analysis => {
+        setInspectedLocation(prev => {
+          if (!prev || prev.lat !== lat || prev.lng !== lng) return prev;
+          return {
+            ...prev,
+            signalEstimate: analysis.signalEstimate,
+            isLoadingSignal: false,
+          };
+        });
+      })
+      .catch(() => {
+        setInspectedLocation(prev => {
+          if (!prev || prev.lat !== lat || prev.lng !== lng) return prev;
+          return { ...prev, isLoadingSignal: false };
+        });
+      });
   }, []);
 
   useEffect(() => {
@@ -5622,7 +5654,14 @@ ${trkptsXml}
                            {inspectedLocation.weather && (
                              <>
                                <span>·</span>
-                               <span>{inspectedLocation.weather.temp}°C</span>
+                               <button
+                                 type="button"
+                                 onClick={() => handleOpenWeatherPanel({ lat: inspectedLocation.lat, lng: inspectedLocation.lng })}
+                                 className="text-sky-300 hover:text-sky-200 underline decoration-sky-500/40 underline-offset-2 cursor-pointer"
+                                 title="Apri meteo completo del punto"
+                               >
+                                 {inspectedLocation.weather.temp}°C
+                               </button>
                              </>
                            )}
                          </div>
@@ -5673,8 +5712,13 @@ ${trkptsXml}
                          </div>
                        </div>
 
-                       {/* Meteo Punto */}
-                       <div className="bg-zinc-800/80 border border-zinc-700/60 rounded-xl p-2 flex items-center gap-2">
+                       {/* Meteo Punto (cliccabile per aprire il meteo completo) */}
+                       <button
+                         type="button"
+                         onClick={() => handleOpenWeatherPanel({ lat: inspectedLocation.lat, lng: inspectedLocation.lng })}
+                         className="bg-zinc-800/80 hover:bg-zinc-700/80 border border-zinc-700/60 hover:border-sky-500/50 rounded-xl p-2 flex items-center gap-2 text-left transition-colors cursor-pointer"
+                         title="Apri meteo completo del punto"
+                       >
                          <div className="shrink-0">
                            {inspectedLocation.weather ? (
                              getWeatherIcon(inspectedLocation.weather.code)
@@ -5696,37 +5740,39 @@ ${trkptsXml}
                              )}
                            </div>
                          </div>
-                       </div>
+                       </button>
                      </div>
 
-                     {/* --- [MODULAR FEATURE 2] SOLAR EPHEMERIS & CAI WALKING ESTIMATE FOR INSPECTED POINT --- */}
+                     {/* Rete Cellulare stimata & Effemeridi Solari */}
                      {(() => {
                        const solar = computeSolarTimes(
                          inspectedLocation.lat,
                          inspectedLocation.lng,
                          inspectedLocation.altitude || 0
                        );
-                       const origin = userLocation || mapViewState.current.center;
-                       const originLabel = userLocation ? 'da GPS' : 'da Centro';
-                       const originAlt = currentStatsTrack?.points?.[0]?.ele || 1200;
-                       const cai = computeCaiWalkingEstimate(
-                         origin.lat,
-                         origin.lng,
-                         originAlt,
-                         inspectedLocation.lat,
-                         inspectedLocation.lng,
-                         inspectedLocation.altitude || originAlt
-                       );
+                       const sigLevel = inspectedLocation.signalEstimate?.level;
+                       const sigColor =
+                         sigLevel === SignalStrength.EXCELLENT || sigLevel === SignalStrength.HIGH
+                           ? 'text-emerald-400'
+                           : sigLevel === SignalStrength.MEDIUM
+                           ? 'text-amber-400'
+                           : sigLevel === SignalStrength.LOW
+                           ? 'text-orange-400'
+                           : 'text-red-400';
                        return (
                          <div className="grid grid-cols-2 gap-2">
                            <div className="bg-zinc-800/60 border border-zinc-700/50 rounded-xl p-2 flex items-center gap-2">
-                             <Footprints size={14} className="text-emerald-400 shrink-0" />
+                             <Signal size={14} className={`${sigLevel ? sigColor : 'text-zinc-500'} shrink-0`} />
                              <div className="min-w-0">
                                <div className="text-[9px] uppercase font-bold text-zinc-400 truncate">
-                                 Stima CAI ({originLabel})
+                                 Rete Cellulare
                                </div>
-                               <div className="text-[11px] font-mono font-bold text-zinc-100 truncate">
-                                 ~{cai.caiTimeFormatted} · {cai.linearDistKm.toFixed(1)}km ({cai.bearingDeg}°{cai.bearingCardinal})
+                               <div className={`text-[11px] font-mono font-bold truncate ${sigLevel ? sigColor : 'text-zinc-300'}`}>
+                                 {inspectedLocation.isLoadingSignal
+                                   ? 'Stima...'
+                                   : sigLevel === SignalStrength.NONE
+                                   ? 'Assente (/)'
+                                   : sigLevel || 'N/D'}
                                </div>
                              </div>
                            </div>
@@ -5750,26 +5796,28 @@ ${trkptsXml}
                  {/* Azioni */}
                  <div className="flex items-center gap-1.5 pt-2 mt-2 border-t border-zinc-800">
                    {isInspectedExpanded && (
-                     <>
-                       <button
-                         onClick={() => {
-                           const coordsStr = `${inspectedLocation.lat.toFixed(5)}, ${inspectedLocation.lng.toFixed(5)}`;
-                           navigator.clipboard?.writeText(coordsStr);
-                           showToast(`Coordinate copiate: ${coordsStr}`);
-                         }}
-                         className="flex-1 py-1.5 px-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-[11px] font-semibold rounded-lg border border-zinc-700 transition-colors flex items-center justify-center gap-1 cursor-pointer"
-                       >
-                         <Save size={12} className="text-zinc-400 shrink-0" /> <span className="truncate">GPS</span>
-                       </button>
-
-                       <button
-                         onClick={() => handleOpenWeatherPanel({ lat: inspectedLocation.lat, lng: inspectedLocation.lng })}
-                         className="flex-1 py-1.5 px-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-[11px] font-semibold rounded-lg border border-zinc-700 transition-colors flex items-center justify-center gap-1 cursor-pointer"
-                       >
-                         <Sun size={12} className="text-yellow-400 shrink-0" /> <span className="truncate">Meteo</span>
-                       </button>
-                     </>
+                     <button
+                       onClick={() => {
+                         const coordsStr = `${inspectedLocation.lat.toFixed(5)}, ${inspectedLocation.lng.toFixed(5)}`;
+                         navigator.clipboard?.writeText(coordsStr);
+                         showToast(`Coordinate copiate: ${coordsStr}`);
+                       }}
+                       className="py-1.5 px-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-[11px] font-semibold rounded-lg border border-zinc-700 transition-colors flex items-center justify-center gap-1 cursor-pointer shrink-0"
+                       title="Copia coordinate GPS"
+                     >
+                       <Save size={12} className="text-zinc-400 shrink-0" /> <span>GPS</span>
+                     </button>
                    )}
+
+                   <a
+                     href={`https://www.google.com/maps/search/?api=1&query=${inspectedLocation.lat.toFixed(6)},${inspectedLocation.lng.toFixed(6)}`}
+                     target="_blank"
+                     rel="noopener noreferrer"
+                     className="flex-1 py-1.5 px-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-[11px] font-semibold rounded-lg border border-zinc-700 transition-colors flex items-center justify-center gap-1 cursor-pointer"
+                     title="Apri punto su Google Maps"
+                   >
+                     <MapPin size={12} className="text-sky-400 shrink-0" /> <span className="truncate">Maps</span>
+                   </a>
 
                    <button
                      onClick={() => {
