@@ -65,24 +65,25 @@
         /* Remove default Leaflet controls as we use custom ones */
         .leaflet-control-zoom { display: none !important; }
 
-        /* Modern Dark Scale Control - Positioned cleanly inside bottom-left HUD */
+        /* Modern Dark Scale Control - Cleanly aligned inside bottom-left HUD pill */
         .leaflet-control-scale {
             margin: 0 !important;
+            padding: 0 !important;
             float: none !important;
         }
         .leaflet-control-scale-line {
-            background: rgba(24, 24, 27, 0.9) !important; /* Zinc-900 with opacity */
-            border: 1px solid rgba(63, 63, 70, 0.6) !important; /* Zinc-700 */
+            background: transparent !important;
+            border: 1.5px solid rgba(161, 161, 170, 0.75) !important; /* Zinc-400 */
             border-top: none !important;
-            color: #d4d4d8 !important; /* Zinc-300 */
-            border-radius: 4px;
-            padding: 2px 8px;
+            color: #e4e4e7 !important; /* Zinc-200 */
+            border-radius: 0 0 3px 3px;
+            padding: 1px 6px;
             font-family: 'Inter', sans-serif;
             font-size: 11px;
             font-weight: 600;
-            line-height: 1.25;
+            line-height: 1.2;
             text-shadow: none !important;
-            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.3);
+            box-shadow: none !important;
             margin: 0 !important;
         }
 
@@ -188,7 +189,7 @@
       if ('caches' in window) {
         caches.keys().then(keys => {
           keys.forEach(k => {
-            if (k.startsWith('mountpro-app-v') && k !== 'mountpro-app-v9-zoom-hud') {
+            if (k.startsWith('mountpro-app-v') && k !== 'mountpro-app-v10-zoom-align') {
               console.log('Purging old app cache:', k);
               caches.delete(k);
             }

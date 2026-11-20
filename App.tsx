@@ -5482,8 +5482,8 @@ ${trkptsXml}
                          <div> <div className="text-xs font-bold text-white leading-none mb-0.5">{centerWeather.temp}°C</div> <div className="text-[10px] text-blue-400 font-bold flex items-center gap-1"> <Droplets size={10} className="fill-blue-400"/> {centerWeather.humidity}% </div> </div>
                      </div>
                    )}
-                   {/* Indicatore Scala Metrica & Livello Zoom sotto il meteo */}
-                   <div className={`flex items-center gap-1.5 ${inspectedLocation ? 'hidden' : ''}`}>
+                   {/* Indicatore Scala Metrica & Livello Zoom allineato a sinistra sotto il meteo */}
+                   <div className={`bg-zinc-900/90 backdrop-blur border border-zinc-700/50 rounded-xl px-2.5 py-1.5 shadow-xl flex items-center gap-2 ${inspectedLocation ? 'hidden' : ''}`}>
                      <div
                        ref={(el) => {
                          scaleSlotRef.current = el;
@@ -5494,7 +5494,7 @@ ${trkptsXml}
                        className="flex items-center"
                      />
                      <span
-                       className="px-2 py-0.5 rounded bg-zinc-900/90 border border-zinc-700/60 text-[11px] font-mono font-semibold text-orange-400 shadow-md tabular-nums leading-tight"
+                       className="pl-2 border-l border-zinc-700/70 text-[11px] font-mono font-semibold text-orange-400 tabular-nums leading-tight"
                        title="Livello di zoom attuale"
                      >
                        Z{Number.isInteger(currentMapZoom) ? currentMapZoom : currentMapZoom.toFixed(1)}
