@@ -1,4 +1,4 @@
-const APP_CACHE_NAME = 'mountpro-app-v8-contours';
+const APP_CACHE_NAME = 'mountpro-app-v9-zoom-hud';
 const TILE_CACHE_NAME = 'mountpro-tiles-v1-offline';
 
 const ASSETS_TO_CACHE = [

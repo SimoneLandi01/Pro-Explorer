@@ -1789,6 +1789,9 @@ ${wptsXml}
   const hoverMarkerRef = useRef<L.Marker | null>(null);
   const gpxLayerGroupRef = useRef<L.LayerGroup | null>(null);
   const rainLayerRef = useRef<L.TileLayer | null>(null);
+  const scaleSlotRef = useRef<HTMLDivElement | null>(null);
+  const scaleControlElRef = useRef<HTMLElement | null>(null);
+  const [currentMapZoom, setCurrentMapZoom] = useState<number>(() => mapViewState.current.zoom);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const layersMenuRef = useRef<HTMLDivElement>(null);
   const trailsMenuRef = useRef<HTMLDivElement>(null);
@@ -3011,17 +3014,20 @@ ${trkptsXml}
           }).setView([center.lat, center.lng], zoom); 
           mapRef.current = map; 
           const scaleCtrl = L.control.scale({ position: 'bottomleft', imperial: false, metric: true }).addTo(map); 
-          // Sposta il controllo scala nel wrapper esterno non ruotato così rimane fisso in basso a sinistra anche ruotando la mappa
+          // Sposta il controllo scala nel contenitore HUD dedicato sotto il meteo (non ruotato, zero sovrapposizioni)
           const scaleEl = scaleCtrl.getContainer();
-          if (scaleEl && mapOuterWrapperRef.current) {
-            scaleEl.style.position = 'absolute';
-            scaleEl.style.bottom = '8px';
-            scaleEl.style.left = '16px';
-            scaleEl.style.zIndex = '1500';
+          if (scaleEl) {
+            scaleControlElRef.current = scaleEl;
+            scaleEl.style.position = 'static';
             scaleEl.style.margin = '0';
             scaleEl.style.pointerEvents = 'none';
-            mapOuterWrapperRef.current.appendChild(scaleEl);
+            if (scaleSlotRef.current) {
+              scaleSlotRef.current.appendChild(scaleEl);
+            } else if (mapOuterWrapperRef.current) {
+              mapOuterWrapperRef.current.appendChild(scaleEl);
+            }
           }
+          setCurrentMapZoom(map.getZoom());
 
           // Adegua mouseEventToContainerPoint per compensare la rotazione della mappa
           map.mouseEventToContainerPoint = function (e: MouseEvent | Touch) {
@@ -3353,10 +3359,14 @@ ${trkptsXml}
             setSelectedPoi(null); 
             clearInspectedLocation();
           }); 
+          map.on('zoomend', () => {
+            setCurrentMapZoom(map.getZoom());
+          });
           map.on('moveend', () => { 
             const c = map.getCenter(); 
             const z = map.getZoom();
-            mapViewState.current = { center: { lat: c.lat, lng: c.lng }, zoom: z }; 
+            mapViewState.current = { center: { lat: c.lat, lng: c.lng }, zoom: z };
+            setCurrentMapZoom(z); 
             if (userSettingsRef.current.autoSaveMapPosition) {
               saveMapStartupState({ lat: c.lat, lng: c.lng, zoom: z });
             }
@@ -5464,10 +5474,32 @@ ${trkptsXml}
                      </span>
                 </div>
              )}
-             {viewMode === 'map' && centerWeather && !isOffline && !inspectedLocation && !isTrackPanelOpen && (
-                 <div onClick={() => handleOpenWeatherPanel()} className={`absolute left-4 z-[1000] bg-zinc-900/90 backdrop-blur border border-zinc-700/50 rounded-2xl p-2.5 shadow-2xl flex items-center gap-3 animate-in fade-in slide-in-from-bottom-4 cursor-pointer hover:bg-zinc-800 transition-all duration-300 group ${weatherOverlayActive ? 'bottom-[136px]' : 'bottom-10'}`}>
-                     <div className="bg-zinc-800 rounded-xl p-1.5 flex items-center justify-center group-hover:bg-zinc-700 transition-colors"> {getWeatherIcon(centerWeather.code)} </div>
-                     <div> <div className="text-xs font-bold text-white leading-none mb-0.5">{centerWeather.temp}°C</div> <div className="text-[10px] text-blue-400 font-bold flex items-center gap-1"> <Droplets size={10} className="fill-blue-400"/> {centerWeather.humidity}% </div> </div>
+             {viewMode === 'map' && !isTrackPanelOpen && (
+                 <div className={`absolute left-4 z-[1500] flex flex-col items-start gap-2 transition-all duration-300 pointer-events-none ${weatherOverlayActive ? 'bottom-[120px]' : 'bottom-3'}`}>
+                   {centerWeather && !isOffline && !inspectedLocation && (
+                     <div onClick={() => handleOpenWeatherPanel()} className="pointer-events-auto bg-zinc-900/90 backdrop-blur border border-zinc-700/50 rounded-2xl p-2.5 shadow-2xl flex items-center gap-3 animate-in fade-in slide-in-from-bottom-4 cursor-pointer hover:bg-zinc-800 transition-all duration-300 group">
+                         <div className="bg-zinc-800 rounded-xl p-1.5 flex items-center justify-center group-hover:bg-zinc-700 transition-colors"> {getWeatherIcon(centerWeather.code)} </div>
+                         <div> <div className="text-xs font-bold text-white leading-none mb-0.5">{centerWeather.temp}°C</div> <div className="text-[10px] text-blue-400 font-bold flex items-center gap-1"> <Droplets size={10} className="fill-blue-400"/> {centerWeather.humidity}% </div> </div>
+                     </div>
+                   )}
+                   {/* Indicatore Scala Metrica & Livello Zoom sotto il meteo */}
+                   <div className={`flex items-center gap-1.5 ${inspectedLocation ? 'hidden' : ''}`}>
+                     <div
+                       ref={(el) => {
+                         scaleSlotRef.current = el;
+                         if (el && scaleControlElRef.current && scaleControlElRef.current.parentElement !== el) {
+                           el.appendChild(scaleControlElRef.current);
+                         }
+                       }}
+                       className="flex items-center"
+                     />
+                     <span
+                       className="px-2 py-0.5 rounded bg-zinc-900/90 border border-zinc-700/60 text-[11px] font-mono font-semibold text-orange-400 shadow-md tabular-nums leading-tight"
+                       title="Livello di zoom attuale"
+                     >
+                       Z{Number.isInteger(currentMapZoom) ? currentMapZoom : currentMapZoom.toFixed(1)}
+                     </span>
+                   </div>
                  </div>
              )}
 
