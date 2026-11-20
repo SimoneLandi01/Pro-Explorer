@@ -19,7 +19,7 @@ import { buildTerrariumUrl, TERRARIUM_HOST } from './contourLayer.ts';
 export const TILE_CACHE_NAME = 'mountpro-tiles-v1-offline';
 const OFFLINE_PACKAGES_DB_KEY = 'offline_map_packages_v1';
 
-export type OfflineMapStyle = 'standard' | 'winter' | 'topo' | 'satellite' | 'satellite_winter' | 'hybrid';
+export type OfflineMapStyle = 'standard' | 'winter' | 'topo' | 'satellite' | 'hybrid';
 
 export type AlpineMacroZone =
   | 'Tutte'
@@ -106,19 +106,6 @@ export const getOfflineMapStyleMeta = (style: OfflineMapStyle) => {
       accentBg: 'bg-amber-950/50',
       accentBorder: 'border-amber-500/40',
       buttonActive: 'bg-amber-600 text-white border-amber-500',
-    };
-  }
-  if (style === 'satellite_winter') {
-    return {
-      id: 'satellite_winter' as const,
-      shortLabel: 'Satellite Invernale',
-      badgeTitle: 'SATELLITE INVERNALE (ORTOFOTO + RILIEVI 3D)',
-      fullLabel: 'Satellite Invernale (Ortofoto Contrasto Neve + Rilievi 3D + Curve)',
-      layersSummary: 'Ortofoto satellitare alpina + Hillshading 3D + DEM Curve/Pendenze >30° · Toponimi',
-      accentText: 'text-indigo-300',
-      accentBg: 'bg-indigo-950/50',
-      accentBorder: 'border-indigo-500/40',
-      buttonActive: 'bg-indigo-600 text-white border-indigo-500',
     };
   }
   if (style === 'satellite') {
@@ -361,16 +348,6 @@ export const getTileUrlsForCoord = (z: number, x: number, y: number, style: Offl
       `https://a.tile.opentopomap.org/${z}/${x}/${y}.png`,
       `https://tile.waymarkedtrails.org/hiking/${z}/${x}/${y}.png`,
     ];
-  }
-  if (style === 'satellite_winter') {
-    const urls = [
-      `https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/${z}/${y}/${x}`,
-      `https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/${z}/${y}/${x}`,
-    ];
-    if (z >= 10 && z <= 12) {
-      urls.push(buildTerrariumUrl(z, x, y));
-    }
-    return urls;
   }
   if (style === 'satellite') {
     return [

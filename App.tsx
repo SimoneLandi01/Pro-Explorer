@@ -144,7 +144,6 @@ import {
   createSlopeAngleLayer,
   createAspectLayer,
   createHillshadeLayer,
-  createWinterSnowLayer,
 } from './services/contourLayer.ts';
 import { POI, POIType, Exposure, SignalStrength } from './types.ts';
 
@@ -1392,7 +1391,7 @@ ${wptsXml}
   const [isSearchingArea, setIsSearchingArea] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [isGlobalSearching, setIsGlobalSearching] = useState(false);
-  const [mapStyle, setMapStyle] = useState<'standard' | 'winter' | 'topo' | 'satellite' | 'satellite_winter' | 'hybrid'>(() => {
+  const [mapStyle, setMapStyle] = useState<'standard' | 'winter' | 'topo' | 'satellite' | 'hybrid'>(() => {
     const initSettings = loadUserSettings();
     // Lo stile separato "topo" (OpenTopoMap) è stato sostituito dalle Curve di Livello integrate in OSM Standard
     const normalize = (s: any) => (s === 'topo' || !s ? 'standard' : s);
@@ -3829,29 +3828,6 @@ ${trkptsXml}
           attribution: 'Esri' 
         })
       ).addTo(mapRef.current); 
-    } else if (mapStyle === 'satellite_winter') {
-      // Satellite Invernale: Ortofoto + Manto Nevoso 3D dal DEM (modulato per quota, esposizione N/S e pareti rocciose) + Curve di livello + Toponimi
-      attachOfflineCacheFallback(
-        L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
-          ...smoothTileOpts,
-          className: 'winter-sat-tiles',
-          maxZoom: 19,
-          attribution: 'Esri World Imagery',
-          zIndex: 1,
-        })
-      ).addTo(mapRef.current);
-      hillshadeLayerRef.current = createWinterSnowLayer({ zIndex: 2 }).addTo(mapRef.current);
-      if (showContours) {
-        contourLayerRef.current = createContourLayer({ zIndex: 3, theme: 'winter' }).addTo(mapRef.current);
-      }
-      attachOfflineCacheFallback(
-        L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}', {
-          ...smoothTileOpts,
-          maxZoom: 19,
-          zIndex: 4,
-          attribution: 'Esri',
-        })
-      ).addTo(mapRef.current);
     } else if (mapStyle === 'hybrid') { 
       // 1. Base Satellite Imagery
       attachOfflineCacheFallback(
@@ -6294,35 +6270,6 @@ ${trkptsXml}
                       {mapStyle === 'satellite' && <span className="w-1.5 h-1.5 rounded-full bg-orange-500" />}
                     </button>
                     <button
-                      onClick={() => setMapStyle('satellite_winter')}
-                      className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-xs transition-colors cursor-pointer ${
-                        mapStyle === 'satellite_winter'
-                          ? 'bg-indigo-500/15 text-indigo-300 border border-indigo-500/40 font-medium'
-                          : 'text-zinc-300 hover:bg-zinc-800/60 border border-transparent'
-                      }`}
-                    >
-                      <span className="flex items-center gap-1.5">
-                        <Snowflake size={12} className="text-indigo-400" />
-                        Satellite Invernale (3D)
-                      </span>
-                      {mapStyle === 'satellite_winter' && <span className="w-1.5 h-1.5 rounded-full bg-indigo-400" />}
-                    </button>
-                    {mapStyle === 'satellite_winter' && (
-                      <button
-                        onClick={() => setShowContours(prev => !prev)}
-                        className="w-full flex items-center justify-between pl-5 pr-2.5 py-1.5 rounded-lg text-[11px] text-zinc-300 hover:bg-zinc-800/60 transition-colors cursor-pointer"
-                        title="Mostra o nascondi le curve di livello sul Satellite Invernale"
-                      >
-                        <span className="flex items-center gap-2">
-                          <Mountain size={12} className={showContours ? 'text-amber-400' : 'text-zinc-500'} />
-                          Curve di livello
-                        </span>
-                        <span className={`w-7 h-3.5 rounded-full relative transition-colors ${showContours ? 'bg-amber-500' : 'bg-zinc-700'}`}>
-                          <span className={`absolute top-0.5 w-2.5 h-2.5 bg-white rounded-full transition-all ${showContours ? 'left-4' : 'left-0.5'}`} />
-                        </span>
-                      </button>
-                    )}
-                    <button
                       onClick={() => setMapStyle('hybrid')}
                       className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-xs transition-colors cursor-pointer ${
                         mapStyle === 'hybrid'
@@ -8309,10 +8256,6 @@ ${trkptsXml}
                               label: `Satellite Puro (${savedOfflinePackages.filter(p => p.mapStyle === 'satellite').length})`,
                             },
                             {
-                              id: 'satellite_winter',
-                              label: `Sat Invernale (${savedOfflinePackages.filter(p => p.mapStyle === 'satellite_winter').length})`,
-                            },
-                            {
                               id: 'hybrid',
                               label: `Ibrida + Sentieri (${savedOfflinePackages.filter(p => p.mapStyle === 'hybrid').length})`,
                             },
@@ -8345,7 +8288,7 @@ ${trkptsXml}
                             });
                             const styleMeta = getOfflineMapStyleMeta(pkg.mapStyle);
                             const baseRegId = pkg.baseRegionId || pkg.id.split('__')[0];
-                            const otherStyles = (['standard', 'winter', 'satellite', 'satellite_winter', 'hybrid'] as const).filter(
+                            const otherStyles = (['standard', 'winter', 'satellite', 'hybrid'] as const).filter(
                               s => s !== pkg.mapStyle
                             );
 
@@ -8609,7 +8552,7 @@ ${trkptsXml}
                                 Scegli il tipo di mappa da scaricare:
                               </div>
 
-                              {(['standard', 'winter', 'satellite', 'satellite_winter', 'hybrid'] as const).map(styleKey => {
+                              {(['standard', 'winter', 'satellite', 'hybrid'] as const).map(styleKey => {
                                 const stMeta = getOfflineMapStyleMeta(styleKey);
                                 const stEst = estimateOfflinePackageStats(region.bounds, styleKey);
                                 const pkgId = buildRegionPackageId(region.id, styleKey);
@@ -8648,8 +8591,6 @@ ${trkptsXml}
                                           ? 'Base Neve 3D + Curve + DEM Pendenze >30° + Piste OpenSnowMap'
                                           : styleKey === 'satellite'
                                           ? 'Ortofoto Satellitare pura + Toponimi vette'
-                                          : styleKey === 'satellite_winter'
-                                          ? 'Ortofoto Invernale + Rilievi 3D + Curve & Pendenze >30°'
                                           : 'Ortofoto Satellitare + Tracciati Sentieri CAI'}
                                       </div>
                                     </div>
@@ -9387,13 +9328,12 @@ ${trkptsXml}
                       <div className="text-[10px] font-bold uppercase text-zinc-500">
                         Livello Mappa Predefinito
                       </div>
-                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
                         {(
                           [
                             { id: 'standard', label: 'OSM' },
                             { id: 'winter', label: 'Neve 3D' },
                             { id: 'satellite', label: 'Satellite' },
-                            { id: 'satellite_winter', label: 'Sat Invernale' },
                             { id: 'hybrid', label: 'Ibrida' },
                           ] as const
                         ).map(st => (
