@@ -7385,59 +7385,34 @@ ${trkptsXml}
                         </div>
                     </div>
 
-                    {/* --- [MODULAR FEATURE 2] CALCOLATORE AVVICINAMENTO CAI & EFFEMERIDI SOLARI --- */}
+                    {/* --- [MODULAR FEATURE 2] ORE DI LUCE & EFFEMERIDI SOLARI --- */}
                     {(() => {
-                        const origin = userLocation || (currentStatsTrack?.points?.[0] ? { lat: currentStatsTrack.points[0].lat, lng: currentStatsTrack.points[0].lng } : mapViewState.current.center);
-                        const originLabel = userLocation ? 'dalla tua posizione GPS' : currentStatsTrack ? 'da inizio traccia GPX' : 'dal centro mappa attuale';
-                        const originAlt = currentStatsTrack?.points?.[0]?.ele || 1200;
-                        const cai = computeCaiWalkingEstimate(
-                            origin.lat,
-                            origin.lng,
-                            originAlt,
-                            selectedPoi.coordinates.lat,
-                            selectedPoi.coordinates.lng,
-                            selectedPoi.altitude || originAlt,
-                            userSettings
-                        );
                         const solar = computeSolarTimes(
                             selectedPoi.coordinates.lat,
                             selectedPoi.coordinates.lng,
                             selectedPoi.altitude || 0
                         );
                         return (
-                            <div className="bg-zinc-900 rounded-3xl p-6 border border-zinc-800 space-y-5">
+                            <div className="bg-zinc-900 rounded-3xl p-5 border border-zinc-800 space-y-4">
                                 <div className="flex items-center justify-between flex-wrap gap-2">
                                     <h3 className="text-sm font-bold text-zinc-400 uppercase tracking-wider flex items-center gap-2">
-                                        <Compass size={16} className="text-orange-500"/> Stima Avvicinamento CAI & Effemeridi
+                                        <Sunrise size={16} className="text-amber-400"/> Ore di Luce & Effemeridi Quota
                                     </h3>
-                                    <span className="text-[11px] font-mono text-zinc-500">Calcolato {originLabel}</span>
+                                    <span className="text-xs font-mono font-semibold text-amber-300">{solar.remainingLightLabel}</span>
                                 </div>
 
-                                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                                <div className="grid grid-cols-3 gap-3">
                                     <div className="bg-zinc-950 p-3.5 rounded-2xl border border-zinc-800/70">
-                                        <div className="text-[10px] text-zinc-500 uppercase font-bold mb-1">Tempo Marcia CAI</div>
-                                        <div className="text-xl font-bold text-orange-400 font-mono">~{cai.caiTimeFormatted}</div>
-                                        <div className="text-[10px] text-zinc-500 mt-0.5">Formula Munter / CAI</div>
+                                        <div className="text-[10px] text-zinc-500 uppercase font-bold mb-1">Alba</div>
+                                        <div className="text-lg font-bold text-amber-300 font-mono">☀ {solar.sunrise}</div>
                                     </div>
                                     <div className="bg-zinc-950 p-3.5 rounded-2xl border border-zinc-800/70">
-                                        <div className="text-[10px] text-zinc-500 uppercase font-bold mb-1">Distanza Stimata</div>
-                                        <div className="text-xl font-bold text-white font-mono">{cai.trailDistKm.toFixed(1)} km</div>
-                                        <div className="text-[10px] text-zinc-500 mt-0.5">Linea d'aria: {cai.linearDistKm.toFixed(1)} km</div>
+                                        <div className="text-[10px] text-zinc-500 uppercase font-bold mb-1">Tramonto</div>
+                                        <div className="text-lg font-bold text-orange-400 font-mono">☾ {solar.sunset}</div>
                                     </div>
                                     <div className="bg-zinc-950 p-3.5 rounded-2xl border border-zinc-800/70">
-                                        <div className="text-[10px] text-zinc-500 uppercase font-bold mb-1">Dislivello Δh</div>
-                                        <div className={`text-xl font-bold font-mono ${cai.deltaH >= 0 ? 'text-emerald-400' : 'text-sky-400'}`}>
-                                            {cai.deltaH >= 0 ? `+${cai.deltaH}m` : `${cai.deltaH}m`}
-                                        </div>
-                                        <div className="text-[10px] text-zinc-500 mt-0.5">Azimut: {cai.bearingDeg}° {cai.bearingCardinal}</div>
-                                    </div>
-                                    <div className="bg-zinc-950 p-3.5 rounded-2xl border border-zinc-800/70">
-                                        <div className="text-[10px] text-zinc-500 uppercase font-bold mb-1">Effemeridi Quota</div>
-                                        <div className="text-sm font-bold text-amber-300 font-mono flex items-center gap-2">
-                                            <span>☀ {solar.sunrise}</span>
-                                            <span>☾ {solar.sunset}</span>
-                                        </div>
-                                        <div className="text-[10px] text-zinc-400 mt-1 truncate">{solar.remainingLightLabel}</div>
+                                        <div className="text-[10px] text-zinc-500 uppercase font-bold mb-1">Fine Crepuscolo</div>
+                                        <div className="text-lg font-bold text-indigo-300 font-mono">{solar.civilTwilightEnd}</div>
                                     </div>
                                 </div>
                             </div>

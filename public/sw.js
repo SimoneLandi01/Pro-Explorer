@@ -1,4 +1,4 @@
-const APP_CACHE_NAME = 'mountpro-app-v14-winter-skimo';
+const APP_CACHE_NAME = 'mountpro-app-v15-details-light';
 const TILE_CACHE_NAME = 'mountpro-tiles-v1-offline';
 
 const ASSETS_TO_CACHE = [
