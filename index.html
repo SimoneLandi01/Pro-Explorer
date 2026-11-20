@@ -207,7 +207,7 @@
       if ('caches' in window) {
         caches.keys().then(keys => {
           keys.forEach(k => {
-            if (k.startsWith('mountpro-app-v') && k !== 'mountpro-app-v16-water-back') {
+            if (k.startsWith('mountpro-app-v') && k !== 'mountpro-app-v17-bugfix-pack') {
               console.log('Purging old app cache:', k);
               caches.delete(k);
             }

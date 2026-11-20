@@ -2995,13 +2995,25 @@ ${trkptsXml}
       }
     }
 
-    // Risoluzione altimetrica DEM puntuale
+    // Risoluzione altimetrica DEM puntuale + sincronizzazione automatica con Punta / Target Lock
     fetchAltitudeForCoordinate(lat, lng)
       .then(alt => {
         setInspectedLocation(prev => {
           if (!prev || prev.lat !== lat || prev.lng !== lng) return prev;
           return { ...prev, altitude: alt, isLoadingAltitude: false };
         });
+        if (alt !== null) {
+          setPickingTargetOrigin(prev =>
+            prev && prev.lat === lat && prev.lng === lng
+              ? { ...prev, altitude: alt, name: `Quota ${alt}m` }
+              : prev
+          );
+          setTargetLock(prev =>
+            prev && prev.originLat === lat && prev.originLng === lng && !prev.originAltitude
+              ? { ...prev, originAltitude: alt, originName: `Quota ${alt}m` }
+              : prev
+          );
+        }
       })
       .catch(() => {
         setInspectedLocation(prev => {
@@ -3010,41 +3022,7 @@ ${trkptsXml}
         });
       });
 
-    // Risoluzione meteo puntuale in tempo reale
-    if (!isOfflineRef.current) {
-      fetch(`https://api.open-meteo.com/v1/forecast?latitude=${lat.toFixed(4)}&longitude=${lng.toFixed(4)}&current=temperature_2m,relative_humidity_2m,weather_code,wind_speed_10m`)
-        .then(res => res.json())
-        .then(data => {
-          if (data && data.current) {
-            setInspectedLocation(prev => {
-              if (!prev || prev.lat !== lat || prev.lng !== lng) return prev;
-              return {
-                ...prev,
-                isLoadingWeather: false,
-                weather: {
-                  temp: Math.round(data.current.temperature_2m),
-                  code: data.current.weather_code,
-                  humidity: Math.round(data.current.relative_humidity_2m),
-                  windSpeed: Math.round(data.current.wind_speed_10m || 0),
-                },
-              };
-            });
-          }
-        })
-        .catch(() => {
-          setInspectedLocation(prev => {
-            if (!prev || prev.lat !== lat || prev.lng !== lng) return prev;
-            return { ...prev, isLoadingWeather: false };
-          });
-        });
-    } else {
-      setInspectedLocation(prev => {
-        if (!prev || prev.lat !== lat || prev.lng !== lng) return prev;
-        return { ...prev, isLoadingWeather: false };
-      });
-    }
-
-    // Stima copertura rete cellulare per il punto selezionato
+    // Unificata richiesta meteo + stima copertura rete cellulare (dimezza chiamate di rete in quota)
     analyzeLocationPhysics(lat, lng)
       .then(analysis => {
         setInspectedLocation(prev => {
@@ -3053,13 +3031,22 @@ ${trkptsXml}
             ...prev,
             signalEstimate: analysis.signalEstimate,
             isLoadingSignal: false,
+            isLoadingWeather: false,
+            weather: analysis.weather
+              ? {
+                  temp: Math.round(analysis.weather.temp),
+                  code: analysis.weather.conditionCode,
+                  humidity: Math.round(analysis.weather.humidity),
+                  windSpeed: Math.round(analysis.weather.windSpeed || 0),
+                }
+              : prev.weather,
           };
         });
       })
       .catch(() => {
         setInspectedLocation(prev => {
           if (!prev || prev.lat !== lat || prev.lng !== lng) return prev;
-          return { ...prev, isLoadingSignal: false };
+          return { ...prev, isLoadingSignal: false, isLoadingWeather: false };
         });
       });
   }, []);
@@ -4111,14 +4098,28 @@ ${trkptsXml}
 
   const nearestWaterSources = useMemo(() => {
       if (!selectedPoi) return [];
-      return allPois
+      const candidates = allPois
         .filter(p => p.id !== selectedPoi.id && (p.type === POIType.FOUNTAIN || p.hasWater))
         .map(p => ({
           ...p,
           distance: getDistance(selectedPoi.coordinates.lat, selectedPoi.coordinates.lng, p.coordinates.lat, p.coordinates.lng)
         }))
-        .sort((a, b) => a.distance - b.distance)
-        .slice(0, 3);
+        // Esclude nodi coincidenti (<20m) con il POI stesso
+        .filter(p => p.distance >= 0.02)
+        .sort((a, b) => a.distance - b.distance);
+
+      // Deduplica nodi fontana quasi coincidenti (<25m l'uno dall'altro)
+      const deduped: typeof candidates = [];
+      for (const c of candidates) {
+        const isDup = deduped.some(
+          ex => getDistance(ex.coordinates.lat, ex.coordinates.lng, c.coordinates.lat, c.coordinates.lng) < 0.025
+        );
+        if (!isDup) {
+          deduped.push(c);
+          if (deduped.length >= 3) break;
+        }
+      }
+      return deduped;
   }, [selectedPoi, allPois]);
 
   // Cronologia navigazione nella schermata Dettagli (es. Bivacco -> Fonte d'acqua -> Freccia Indietro -> Bivacco)
@@ -5368,8 +5369,15 @@ ${trkptsXml}
             const origin = hasCustomOrigin
               ? { lat: targetLock.originLat!, lng: targetLock.originLng! }
               : userLocation || mapViewState.current.center;
+            const liveInspectedOriginAlt =
+              hasCustomOrigin &&
+              inspectedLocation &&
+              inspectedLocation.lat === targetLock.originLat &&
+              inspectedLocation.lng === targetLock.originLng
+                ? inspectedLocation.altitude
+                : null;
             const originAlt = hasCustomOrigin
-              ? (targetLock.originAltitude ?? (currentStatsTrack?.points?.[0]?.ele || 1200))
+              ? (targetLock.originAltitude ?? liveInspectedOriginAlt ?? (currentStatsTrack?.points?.[0]?.ele || 1200))
               : (currentStatsTrack?.points?.[0]?.ele || 1200);
             const cai = computeCaiWalkingEstimate(
               origin.lat,
@@ -6376,10 +6384,16 @@ ${trkptsXml}
                       );
                     })()}
 
-                    {/* Overlay Pendenze Valanghive >30° */}
+                    {/* Overlay Pendenze Valanghive >30° (mutuamente esclusivo con Esposizione Versanti) */}
                     <button
                       type="button"
-                      onClick={() => setShowSlopeAngles(prev => !prev)}
+                      onClick={() =>
+                        setShowSlopeAngles(prev => {
+                          const next = !prev;
+                          if (next) setShowAspect(false);
+                          return next;
+                        })
+                      }
                       className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-xs transition-colors cursor-pointer ${
                         showSlopeAngles
                           ? 'bg-amber-500/15 text-amber-300 border border-amber-500/35'
@@ -6403,10 +6417,16 @@ ${trkptsXml}
                       </div>
                     )}
 
-                    {/* Overlay Esposizione Versanti (Aspect Map) */}
+                    {/* Overlay Esposizione Versanti (Aspect Map - mutuamente esclusivo con Pendenze >30°) */}
                     <button
                       type="button"
-                      onClick={() => setShowAspect(prev => !prev)}
+                      onClick={() =>
+                        setShowAspect(prev => {
+                          const next = !prev;
+                          if (next) setShowSlopeAngles(false);
+                          return next;
+                        })
+                      }
                       className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-xs transition-colors cursor-pointer ${
                         showAspect
                           ? 'bg-indigo-500/15 text-indigo-300 border border-indigo-500/35'
@@ -7489,32 +7509,46 @@ ${trkptsXml}
                         <div>
                             <h3 className="text-sm font-bold text-zinc-500 uppercase tracking-wider mb-4 flex items-center gap-2"><Droplets size={16}/> Fonti d'acqua vicine</h3>
                             <div className="space-y-3">
-                                {nearestWaterSources.map(water => (
-                                    <div
-                                        key={water.id}
-                                        onClick={() => {
-                                            if (selectedPoi) {
-                                                setPoiDetailHistory(prev => [...prev, selectedPoi]);
-                                            }
-                                            setSelectedPoi(water);
-                                            if (detailScrollRef.current) detailScrollRef.current.scrollTop = 0;
-                                        }}
-                                        className="flex items-center justify-between p-4 bg-zinc-900/50 hover:bg-zinc-900 border border-zinc-800 rounded-2xl cursor-pointer transition-colors group"
-                                    >
-                                        <div className="flex items-center gap-4">
-                                            <div className="w-10 h-10 rounded-full bg-blue-900/20 text-blue-400 flex items-center justify-center group-hover:bg-blue-600 group-hover:text-white transition-colors border border-blue-500/20">
-                                                <Droplets size={18}/>
-                                            </div>
-                                            <div>
-                                                <div className="text-base font-bold text-zinc-200">{water.name}</div>
-                                                <div className="text-xs text-zinc-500 font-mono">
-                                                    {water.altitude > 0 ? `${water.altitude}m` : 'Quota...'} • {(water as any).distance.toFixed(1)}km
+                                {nearestWaterSources.map(water => {
+                                    const distKm = (water as any).distance as number;
+                                    const distLabel = distKm < 1 ? `${Math.round(distKm * 1000)}m` : `${distKm.toFixed(1)}km`;
+                                    const brg = computeBearing(
+                                        selectedPoi.coordinates.lat,
+                                        selectedPoi.coordinates.lng,
+                                        water.coordinates.lat,
+                                        water.coordinates.lng
+                                    );
+                                    const hasBothAlts = water.altitude > 0 && selectedPoi.altitude > 0;
+                                    const deltaH = hasBothAlts ? Math.round(water.altitude - selectedPoi.altitude) : null;
+                                    const deltaLabel =
+                                        deltaH !== null ? ` (${deltaH >= 0 ? `+${deltaH}m` : `${deltaH}m`})` : '';
+                                    return (
+                                        <div
+                                            key={water.id}
+                                            onClick={() => {
+                                                if (selectedPoi) {
+                                                    setPoiDetailHistory(prev => [...prev, selectedPoi]);
+                                                }
+                                                setSelectedPoi(water);
+                                                if (detailScrollRef.current) detailScrollRef.current.scrollTop = 0;
+                                            }}
+                                            className="flex items-center justify-between p-4 bg-zinc-900/50 hover:bg-zinc-900 border border-zinc-800 rounded-2xl cursor-pointer transition-colors group"
+                                        >
+                                            <div className="flex items-center gap-4">
+                                                <div className="w-10 h-10 rounded-full bg-blue-900/20 text-blue-400 flex items-center justify-center group-hover:bg-blue-600 group-hover:text-white transition-colors border border-blue-500/20">
+                                                    <Droplets size={18}/>
+                                                </div>
+                                                <div>
+                                                    <div className="text-base font-bold text-zinc-200">{water.name}</div>
+                                                    <div className="text-xs text-zinc-400 font-mono">
+                                                        {water.altitude > 0 ? `${water.altitude}m${deltaLabel}` : 'Quota...'} • {distLabel} {brg.cardinal}
+                                                    </div>
                                                 </div>
                                             </div>
+                                            <ChevronRight size={20} className="text-zinc-600 group-hover:text-white transition-colors"/>
                                         </div>
-                                        <ChevronRight size={20} className="text-zinc-600 group-hover:text-white transition-colors"/>
-                                    </div>
-                                ))}
+                                    );
+                                })}
                             </div>
                         </div>
                     )}
