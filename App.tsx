@@ -1112,6 +1112,10 @@ ${wptsXml}
 
   // --- [MODULAR FEATURE 4] TARGET LOCK & COMPASS STATE ---
   const [targetLock, setTargetLock] = useState<TargetLockPoint | null>(null);
+  const targetLockRef = useRef<TargetLockPoint | null>(null);
+  useEffect(() => {
+    targetLockRef.current = targetLock;
+  }, [targetLock]);
   const targetLockLayerGroupRef = useRef<L.LayerGroup | null>(null);
   const [pickingTargetOrigin, setPickingTargetOrigin] = useState<{
     lat: number;
@@ -1729,6 +1733,10 @@ ${wptsXml}
     isLoadingWeather: boolean;
   } | null>(null);
   const inspectedMarkerRef = useRef<L.Marker | null>(null);
+  const inspectedLocationRef = useRef<typeof inspectedLocation>(null);
+  useEffect(() => {
+    inspectedLocationRef.current = inspectedLocation;
+  }, [inspectedLocation]);
   const handleSelectMapPointRef = useRef<(lat: number, lng: number) => void>(() => {});
   const longPressTimerRef = useRef<any>(null);
   const isLongPressTriggeredRef = useRef<boolean>(false);
@@ -2279,34 +2287,39 @@ ${wptsXml}
       lineCap: 'round',
     }).addTo(targetLockLayerGroupRef.current);
 
-    if (targetLock.originLat !== undefined && targetLock.originLng !== undefined) {
-      const originDotIcon = L.divIcon({
-        className: 'target-origin-dot',
-        html: `<div class="w-3 h-3 rounded-full bg-orange-500 border-2 border-black shadow -translate-x-1/2 -translate-y-1/2 pointer-events-none"></div>`,
-        iconSize: [0, 0],
-        iconAnchor: [0, 0],
+    if (targetLock.originLat !== undefined && targetLock.originLng !== undefined && !inspectedLocation) {
+      const originCrossIcon = L.divIcon({
+        className: 'custom-poi-marker',
+        html: `
+          <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke-linecap="round" style="display:block;pointer-events:none;">
+            <path d="M12 3v18M3 12h18" stroke="#000000" stroke-width="5" />
+            <path d="M12 3v18M3 12h18" stroke="#f97316" stroke-width="2.5" />
+          </svg>
+        `,
+        iconSize: [24, 24],
+        iconAnchor: [12, 12],
       });
-      L.marker(originLatLng, { icon: originDotIcon, interactive: false, zIndexOffset: 9000 }).addTo(
+      L.marker(originLatLng, { icon: originCrossIcon, interactive: false, zIndexOffset: 9000 }).addTo(
         targetLockLayerGroupRef.current
       );
     }
 
-    // Anello luminoso sul Target bloccato
-    const ringIcon = L.divIcon({
-      className: 'target-lock-ring',
+    // Croce azzurra con contorno nero sul Target bloccato
+    const targetCrossIcon = L.divIcon({
+      className: 'custom-poi-marker',
       html: `
-        <div class="relative flex items-center justify-center -translate-x-1/2 -translate-y-1/2 pointer-events-none">
-          <span class="absolute w-11 h-11 rounded-full border-2 border-cyan-400/60 animate-ping"></span>
-          <span class="w-8 h-8 rounded-full border-2 border-cyan-400 bg-cyan-500/10 shadow-[0_0_15px_rgba(6,182,212,0.6)]"></span>
-        </div>
+        <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke-linecap="round" style="display:block;pointer-events:none;">
+          <path d="M12 3v18M3 12h18" stroke="#000000" stroke-width="5.5" />
+          <path d="M12 3v18M3 12h18" stroke="#06b6d4" stroke-width="2.75" />
+        </svg>
       `,
-      iconSize: [0, 0],
-      iconAnchor: [0, 0],
+      iconSize: [28, 28],
+      iconAnchor: [14, 14],
     });
-    L.marker(targetLatLng, { icon: ringIcon, interactive: false, zIndexOffset: 9000 }).addTo(
+    L.marker(targetLatLng, { icon: targetCrossIcon, interactive: false, zIndexOffset: 9000 }).addTo(
       targetLockLayerGroupRef.current
     );
-  }, [targetLock, userLocation, isMapReady]);
+  }, [targetLock, userLocation, isMapReady, inspectedLocation]);
 
   useEffect(() => {
     updateTargetLockLine();
@@ -2908,19 +2921,17 @@ ${trkptsXml}
     });
 
     if (mapRef.current) {
-      // Solo croce arancio con contorno nero centrata esattamente sulle coordinate
+      // Solo croce arancio con contorno nero centrata esattamente sulle coordinate (iconSize esplicito 28x28 per evitare collasso 0x0)
       const pinIcon = L.divIcon({
-        className: 'inspected-point-pin',
+        className: 'custom-poi-marker',
         html: `
-          <div class="relative flex items-center justify-center -translate-x-1/2 -translate-y-1/2 pointer-events-none">
-            <svg xmlns="http://www.w3.org/2000/svg" width="26" height="26" viewBox="0 0 24 24" fill="none" stroke-linecap="round">
-              <path d="M12 3v18M3 12h18" stroke="#000000" stroke-width="5" />
-              <path d="M12 3v18M3 12h18" stroke="#f97316" stroke-width="2.5" />
-            </svg>
-          </div>
+          <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke-linecap="round" style="display:block;pointer-events:none;">
+            <path d="M12 3v18M3 12h18" stroke="#000000" stroke-width="5.5" />
+            <path d="M12 3v18M3 12h18" stroke="#f97316" stroke-width="2.75" />
+          </svg>
         `,
-        iconSize: [0, 0],
-        iconAnchor: [0, 0],
+        iconSize: [28, 28],
+        iconAnchor: [14, 14],
       });
 
       if (!inspectedMarkerRef.current) {
@@ -3413,12 +3424,14 @@ ${trkptsXml}
                 .catch(() => {});
               return;
             }
-            // Singolo click su mappa: chiude i pannelli e deseleziona punto / POI
+            // Singolo click su mappa: chiude i pannelli, ma se ci sono due punti attivi (punto selezionato + punta) il popup del primo punto sparisce solo con la X
             setIsDetailPanelOpen(false); 
             setIsTrackPanelOpen(false); 
             setIsWeatherPanelOpen(false); 
             setSelectedPoi(null); 
-            clearInspectedLocation();
+            if (!(targetLockRef.current && inspectedLocationRef.current)) {
+              clearInspectedLocation();
+            }
           }); 
           map.on('moveend', () => { 
             const c = map.getCenter(); 

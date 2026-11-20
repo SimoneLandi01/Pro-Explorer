@@ -1,4 +1,4 @@
-const APP_CACHE_NAME = 'mountpro-app-v11-hud-refine';
+const APP_CACHE_NAME = 'mountpro-app-v12-crosshair-scale';
 const TILE_CACHE_NAME = 'mountpro-tiles-v1-offline';
 
 const ASSETS_TO_CACHE = [
