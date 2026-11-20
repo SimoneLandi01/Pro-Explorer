@@ -30,8 +30,8 @@
     </script>
 
     <style>
-        html, body, #root { height: 100%; margin: 0; padding: 0; overflow: hidden; }
-        body { font-family: 'Inter', sans-serif; background-color: #09090b; color: #f4f4f5; }
+        html, body, #root { height: 100%; height: 100dvh; margin: 0; padding: 0; overflow: hidden; -webkit-tap-highlight-color: transparent; }
+        body { font-family: 'Inter', sans-serif; background-color: #09090b; color: #f4f4f5; overscroll-behavior: none; }
         
         /* Modern Dark Mountain Scrollbar */
         * {
@@ -63,7 +63,7 @@
         .leaflet-container { background: #09090b !important; }
         
         /* Remove default Leaflet controls as we use custom ones */
-        .leaflet-control-zoom { display: none !important; }
+        .leaflet-control-zoom, .leaflet-control-attribution { display: none !important; }
 
         /* Modern Dark Scale Control - Cleanly aligned inside bottom-left HUD pill */
         .leaflet-control-scale {
@@ -207,7 +207,7 @@
       if ('caches' in window) {
         caches.keys().then(keys => {
           keys.forEach(k => {
-            if (k.startsWith('mountpro-app-v') && k !== 'mountpro-app-v17-bugfix-pack') {
+            if (k.startsWith('mountpro-app-v') && k !== 'mountpro-app-v18-mobile-polish') {
               console.log('Purging old app cache:', k);
               caches.delete(k);
             }

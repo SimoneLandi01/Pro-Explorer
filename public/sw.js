@@ -1,4 +1,4 @@
-const APP_CACHE_NAME = 'mountpro-app-v17-bugfix-pack';
+const APP_CACHE_NAME = 'mountpro-app-v18-mobile-polish';
 const TILE_CACHE_NAME = 'mountpro-tiles-v1-offline';
 
 const ASSETS_TO_CACHE = [

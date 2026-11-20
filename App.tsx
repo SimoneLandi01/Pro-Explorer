@@ -2955,6 +2955,8 @@ ${trkptsXml}
     setIsDetailPanelOpen(false);
     setIsTrackPanelOpen(false);
     setIsWeatherPanelOpen(false);
+    setIsLayersMenuOpen(false);
+    setIsTrailsMenuOpen(false);
     setIsInspectedExpanded(false);
 
     setInspectedLocation({
@@ -3484,6 +3486,8 @@ ${trkptsXml}
             setIsDetailPanelOpen(false); 
             setIsTrackPanelOpen(false); 
             setIsWeatherPanelOpen(false); 
+            setIsLayersMenuOpen(false);
+            setIsTrailsMenuOpen(false);
             setSelectedPoi(null); 
             if (!(targetLockRef.current && inspectedLocationRef.current)) {
               clearInspectedLocation();
@@ -4854,7 +4858,7 @@ ${trkptsXml}
 
       <main className="flex-1 relative h-full w-full">
         {/* Header Controls */}
-        <header className="absolute top-4 left-4 right-4 z-[2000] flex flex-col gap-2.5 pointer-events-none">
+        <header className="absolute top-2.5 left-2.5 right-2.5 sm:top-4 sm:left-4 sm:right-4 z-[2000] flex flex-col gap-1.5 sm:gap-2.5 pointer-events-none">
            <div className="flex items-center gap-2 w-full max-w-lg mx-auto pointer-events-auto">
              <button onClick={() => setViewMode(v => v === 'list' ? 'map' : 'list')} className="w-11 h-11 bg-zinc-900/95 backdrop-blur border border-zinc-800 rounded-xl flex items-center justify-center shadow-xl text-zinc-300 hover:text-white transition-all shrink-0 cursor-pointer" title={viewMode === 'list' ? 'Passa alla Mappa' : 'Passa alla Lista'}> {viewMode === 'list' ? <MapIcon size={20}/> : <List size={20}/>} </button>
              <div ref={searchContainerRef} className="flex-1 relative shadow-xl">
@@ -5777,14 +5781,24 @@ ${trkptsXml}
              {/* Inspected Arbitrary Map Point Card - Minimale di default con espansione */}
              {viewMode === 'map' && inspectedLocation && !selectedPoi && !isTrackPanelOpen && (
                <div className={`absolute left-3 right-[72px] sm:left-4 sm:right-auto ${isInspectedExpanded ? 'sm:w-88 p-3.5' : 'sm:w-72 p-2.5'} z-[3200] bg-zinc-900/95 backdrop-blur-md border border-orange-500/60 rounded-2xl shadow-2xl animate-in fade-in slide-in-from-bottom-4 transition-all duration-200 ${weatherOverlayActive ? 'bottom-[136px]' : 'bottom-4'}`}>
-                 {/* Intestazione compatta */}
+                 {/* Intestazione compatta (tocca coordinate per copiarle negli appunti) */}
                  <div className="flex items-center justify-between gap-2">
                    <div className="flex items-center gap-2 min-w-0">
                      <span className="w-2 h-2 rounded-full bg-orange-500 shrink-0" />
                      <div className="min-w-0">
-                       <p className="text-[11px] font-mono font-bold text-zinc-100 truncate">
-                         {inspectedLocation.lat.toFixed(5)}°, {inspectedLocation.lng.toFixed(5)}°
-                       </p>
+                       <button
+                         type="button"
+                         onClick={() => {
+                           const coordsStr = `${inspectedLocation.lat.toFixed(5)}, ${inspectedLocation.lng.toFixed(5)}`;
+                           navigator.clipboard?.writeText(coordsStr);
+                           showToast(`Coordinate copiate: ${coordsStr}`);
+                         }}
+                         className="text-[11px] font-mono font-bold text-zinc-100 hover:text-orange-300 flex items-center gap-1.5 truncate cursor-pointer"
+                         title="Tocca per copiare le coordinate GPS"
+                       >
+                         <span className="truncate">{inspectedLocation.lat.toFixed(5)}°, {inspectedLocation.lng.toFixed(5)}°</span>
+                         <Copy size={10} className="text-zinc-400 shrink-0" />
+                       </button>
                        {!isInspectedExpanded && (
                          <div className="flex items-center gap-2 text-[11px] font-mono text-zinc-400 mt-0.5">
                            <span className="text-orange-400 font-bold">
@@ -5936,30 +5950,16 @@ ${trkptsXml}
                    </div>
                  )}
 
-                 {/* Azioni */}
-                 <div className="flex items-center gap-1.5 pt-2 mt-2 border-t border-zinc-800">
-                   {isInspectedExpanded && (
-                     <button
-                       onClick={() => {
-                         const coordsStr = `${inspectedLocation.lat.toFixed(5)}, ${inspectedLocation.lng.toFixed(5)}`;
-                         navigator.clipboard?.writeText(coordsStr);
-                         showToast(`Coordinate copiate: ${coordsStr}`);
-                       }}
-                       className="py-1.5 px-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-[11px] font-semibold rounded-lg border border-zinc-700 transition-colors flex items-center justify-center gap-1 cursor-pointer shrink-0"
-                       title="Copia coordinate GPS"
-                     >
-                       <Save size={12} className="text-zinc-400 shrink-0" /> <span>GPS</span>
-                     </button>
-                   )}
-
+                 {/* Azioni ottimizzate smartphone (4 pulsanti bilanciati senza sforamenti su schermi 360px) */}
+                 <div className="grid grid-cols-4 gap-1.5 pt-2 mt-2 border-t border-zinc-800">
                    <a
                      href={`https://www.google.com/maps/search/?api=1&query=${inspectedLocation.lat.toFixed(6)},${inspectedLocation.lng.toFixed(6)}`}
                      target="_blank"
                      rel="noopener noreferrer"
-                     className="flex-1 py-1.5 px-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-[11px] font-semibold rounded-lg border border-zinc-700 transition-colors flex items-center justify-center gap-1 cursor-pointer"
+                     className="py-1.5 px-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-[10.5px] sm:text-[11px] font-semibold rounded-lg border border-zinc-700 transition-colors flex items-center justify-center gap-1 cursor-pointer whitespace-nowrap"
                      title="Apri punto su Google Maps"
                    >
-                     <MapPin size={12} className="text-sky-400 shrink-0" /> <span className="truncate">Maps</span>
+                     <MapPin size={11} className="text-sky-400 shrink-0" /> <span>Maps</span>
                    </a>
 
                    <button
@@ -5974,10 +5974,10 @@ ${trkptsXml}
                          category: 'Punto Mappa',
                        });
                      }}
-                     className="flex-1 py-1.5 px-2 bg-emerald-950/70 hover:bg-emerald-900/70 text-emerald-300 border border-emerald-500/40 text-[11px] font-semibold rounded-lg transition-colors flex items-center justify-center gap-1 cursor-pointer"
+                     className="py-1.5 px-1.5 bg-emerald-950/70 hover:bg-emerald-900/70 text-emerald-300 border border-emerald-500/40 text-[10.5px] sm:text-[11px] font-semibold rounded-lg transition-colors flex items-center justify-center gap-1 cursor-pointer whitespace-nowrap"
                      title="Aggiungi questo punto come tappa del Tour"
                    >
-                     <Route size={12} /> +Tour
+                     <Route size={11} className="shrink-0" /> <span>+Tour</span>
                    </button>
 
                    <button
@@ -5990,22 +5990,22 @@ ${trkptsXml}
                        });
                        showToast("Tocca un altro punto sulla mappa per puntarlo!");
                      }}
-                     className={`flex-1 py-1.5 px-2 border text-[11px] font-semibold rounded-lg transition-colors flex items-center justify-center gap-1 cursor-pointer ${
+                     className={`py-1.5 px-1.5 border text-[10.5px] sm:text-[11px] font-semibold rounded-lg transition-colors flex items-center justify-center gap-1 cursor-pointer whitespace-nowrap ${
                        pickingTargetOrigin
                          ? 'bg-cyan-600 text-white border-cyan-400'
                          : 'bg-cyan-950/70 hover:bg-cyan-900/70 text-cyan-300 border-cyan-500/40'
                      }`}
                      title="Seleziona un altro punto sulla mappa da puntare"
                    >
-                     <Compass size={12} /> Punta
+                     <Compass size={11} className="shrink-0" /> <span>Punta</span>
                    </button>
 
                    <button
                      onClick={handleSaveWaypointFromPoint}
-                     className="flex-1 py-1.5 px-2.5 bg-orange-600 hover:bg-orange-500 text-white text-[11px] font-semibold rounded-lg transition-colors flex items-center justify-center gap-1 cursor-pointer shadow-sm"
+                     className="py-1.5 px-1.5 bg-orange-600 hover:bg-orange-500 text-white text-[10.5px] sm:text-[11px] font-semibold rounded-lg transition-colors flex items-center justify-center gap-1 cursor-pointer shadow-sm whitespace-nowrap"
                      title="Salva punto nei tuoi POI"
                    >
-                     <Plus size={13} /> Salva
+                     <Plus size={12} className="shrink-0" /> <span>Salva</span>
                    </button>
                  </div>
                </div>
@@ -6137,7 +6137,7 @@ ${trkptsXml}
         )}
 
         {viewMode === 'map' && (
-          <div className={`absolute right-4 z-[3000] flex flex-col items-end gap-3 pointer-events-auto transition-all duration-300 ${isTrackPanelOpen && tracks.length > 0 && !isTrackPanelExpanded ? 'bottom-[calc(40vh+12px)]' : weatherOverlayActive ? 'bottom-[136px]' : 'bottom-6'}`}>
+          <div className={`absolute right-4 z-[3500] flex flex-col items-end gap-3 pointer-events-auto transition-all duration-300 ${isTrackPanelOpen && tracks.length > 0 && !isTrackPanelExpanded ? 'bottom-[calc(40vh+12px)]' : weatherOverlayActive ? 'bottom-[136px]' : 'bottom-6'}`}>
              {/* Pulsante Bussola Dinamico: appare quando la mappa è ruotata e riporta il Nord in alto con animazione fluida */}
              {Math.abs(mapBearing % 360) > 0.5 && (
                <button
@@ -6169,7 +6169,7 @@ ${trkptsXml}
 
              <div ref={trailsMenuRef} className="relative">
                {isTrailsMenuOpen && (
-                  <div className="absolute right-14 top-0 w-[min(290px,calc(100vw-84px))] max-h-[calc(100dvh-160px)] bg-zinc-900/95 backdrop-blur-md border border-zinc-700 rounded-2xl p-4 shadow-2xl overflow-y-auto z-[4000] animate-in fade-in slide-in-from-right-3">
+                  <div className="absolute right-14 -bottom-36 w-[min(285px,calc(100vw-80px))] max-h-[calc(100dvh-115px)] bg-zinc-900/95 backdrop-blur-md border border-zinc-700 rounded-2xl p-3.5 shadow-2xl overflow-y-auto z-[4000] animate-in fade-in slide-in-from-right-3">
                     <div className="flex items-center justify-between mb-3">
                       <h4 className="text-[10px] font-bold uppercase text-zinc-400 tracking-wider flex items-center gap-2"><Route size={12} className="text-orange-500"/> Gestione Percorsi</h4>
                       <button 
@@ -6242,7 +6242,7 @@ ${trkptsXml}
              
              <div ref={layersMenuRef} className="relative">
                {isLayersMenuOpen && (
-                <div className="absolute right-14 bottom-0 w-[min(265px,calc(100vw-84px))] max-h-[calc(100dvh-160px)] bg-zinc-900/95 backdrop-blur-md border border-zinc-800 rounded-2xl p-2.5 shadow-2xl overflow-y-auto z-[4000] animate-in fade-in slide-in-from-right-3">
+                <div className="absolute right-14 -bottom-36 w-[min(268px,calc(100vw-80px))] max-h-[calc(100dvh-115px)] bg-zinc-900/95 backdrop-blur-md border border-zinc-800 rounded-2xl p-2.5 shadow-2xl overflow-y-auto z-[4000] animate-in fade-in slide-in-from-right-3">
                   <div className="flex items-center justify-between pb-2 mb-2 border-b border-zinc-800/80">
                     <span className="text-[11px] font-bold uppercase text-zinc-400 tracking-wider flex items-center gap-1.5">
                       <Layers size={13} className="text-orange-500" />
@@ -8127,11 +8127,11 @@ ${trkptsXml}
                 <button
                   type="button"
                   onClick={() => setIsOfflineManagerOpen(false)}
-                  className="px-3.5 py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-zinc-100 hover:text-white text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer shrink-0 shadow-sm"
+                  className="p-2 sm:px-3.5 sm:py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-zinc-100 hover:text-white text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer shrink-0 shadow-sm"
                   title="Torna alla Mappa"
                 >
-                  <ChevronLeft size={16} className="text-orange-400" />
-                  <span>Torna alla Mappa</span>
+                  <ChevronLeft size={18} className="text-orange-400" />
+                  <span className="hidden sm:inline">Torna alla Mappa</span>
                 </button>
 
                 <div className="min-w-0">
@@ -8924,7 +8924,7 @@ ${trkptsXml}
               <button
                 type="button"
                 onClick={() => setIsSettingsOpen(false)}
-                className="px-3.5 py-2 rounded-xl bg-zinc-900 hover:bg-zinc-800 text-zinc-200 hover:text-white border border-zinc-800 text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer shrink-0"
+                className="hidden sm:flex px-3.5 py-2 rounded-xl bg-zinc-900 hover:bg-zinc-800 text-zinc-200 hover:text-white border border-zinc-800 text-xs font-bold items-center gap-1.5 transition-colors cursor-pointer shrink-0"
               >
                 <MapIcon size={14} className="text-orange-400" />
                 <span>Torna alla Mappa</span>
