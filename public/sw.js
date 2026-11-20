@@ -1,4 +1,4 @@
-const APP_CACHE_NAME = 'mountpro-app-v19-zindex-hierarchy';
+const APP_CACHE_NAME = 'mountpro-app-v20-phone-proportions';
 const TILE_CACHE_NAME = 'mountpro-tiles-v1-offline';
 
 const ASSETS_TO_CACHE = [

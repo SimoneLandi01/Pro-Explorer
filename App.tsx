@@ -4860,12 +4860,12 @@ ${trkptsXml}
 
       <main className="flex-1 relative h-full w-full">
         {/* Header Controls (senza z-index contenitore bloccante, così Ricerca z-7000 e Tour Planner z-4500 stanno sempre sopra ai tasti laterali z-2800) */}
-        <header className="absolute top-2.5 left-2.5 right-2.5 sm:top-4 sm:left-4 sm:right-4 flex flex-col gap-1.5 sm:gap-2.5 pointer-events-none">
-           <div className="relative z-[2900] flex items-center gap-2 w-full max-w-lg mx-auto pointer-events-auto">
-             <button onClick={() => setViewMode(v => v === 'list' ? 'map' : 'list')} className="w-11 h-11 bg-zinc-900/95 backdrop-blur border border-zinc-800 rounded-xl flex items-center justify-center shadow-xl text-zinc-300 hover:text-white transition-all shrink-0 cursor-pointer" title={viewMode === 'list' ? 'Passa alla Mappa' : 'Passa alla Lista'}> {viewMode === 'list' ? <MapIcon size={20}/> : <List size={20}/>} </button>
-             <div ref={searchContainerRef} className="flex-1 relative shadow-xl">
+        <header className="absolute top-3 left-2.5 right-2.5 sm:top-4 sm:left-4 sm:right-4 flex flex-col gap-1.5 sm:gap-2.5 pointer-events-none">
+           <div className="relative z-[2900] flex items-center gap-1.5 sm:gap-2 w-full max-w-lg mx-auto pointer-events-auto">
+             <button onClick={() => setViewMode(v => v === 'list' ? 'map' : 'list')} className="w-10 h-10 sm:w-11 sm:h-11 bg-zinc-900/95 backdrop-blur border border-zinc-800 rounded-xl flex items-center justify-center shadow-xl text-zinc-300 hover:text-white transition-all shrink-0 cursor-pointer" title={viewMode === 'list' ? 'Passa alla Mappa' : 'Passa alla Lista'}> {viewMode === 'list' ? <MapIcon size={19}/> : <List size={19}/>} </button>
+             <div ref={searchContainerRef} className="flex-1 min-w-0 relative shadow-xl">
                <form onSubmit={handleGlobalSearch} className="w-full relative">
-                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-400 pointer-events-none"/>
+                 <Search className="absolute left-2.5 sm:left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-400 pointer-events-none"/>
                  <input
                    type="text"
                    value={searchQuery}
@@ -4877,8 +4877,8 @@ ${trkptsXml}
                      setShowSuggestions(true);
                      setTimeout(() => fullScreenSearchInputRef.current?.focus(), 40);
                    }}
-                   placeholder={isOffline ? "Cerca bivacco, cima, malga, quota..." : "Cerca bivacco, cima, malga, valle..."}
-                   className="w-full h-11 bg-zinc-900/95 backdrop-blur border border-zinc-800 rounded-xl pl-10 pr-10 text-sm focus:ring-2 focus:ring-orange-500 outline-none text-zinc-200 placeholder:text-zinc-500 transition-all cursor-text"
+                   placeholder={isOffline ? "Cerca offline o GPS..." : "Cerca luogo, cima, GPS..."}
+                   className="w-full h-10 sm:h-11 bg-zinc-900/95 backdrop-blur border border-zinc-800 rounded-xl pl-8 pr-7 sm:pl-10 sm:pr-10 text-[13px] sm:text-sm focus:ring-2 focus:ring-orange-500 outline-none text-zinc-200 placeholder:text-zinc-500 transition-all cursor-text"
                  />
                  {isGlobalSearching || isRemoteAutocompleteLoading ? (
                    <Loader2 className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-orange-500 animate-spin"/>
@@ -5283,7 +5283,7 @@ ${trkptsXml}
                        setCustomAreaSelecting(false);
                        setIsOfflineManagerOpen(true);
                      }}
-                     className={`relative w-11 h-11 bg-zinc-900/95 backdrop-blur border rounded-xl flex items-center justify-center shadow-xl transition-all shrink-0 cursor-pointer ${
+                     className={`relative w-10 h-10 sm:w-11 sm:h-11 bg-zinc-900/95 backdrop-blur border rounded-xl flex items-center justify-center shadow-xl transition-all shrink-0 cursor-pointer ${
                        isDownloading
                          ? 'border-orange-500 text-orange-400'
                          : savedOfflinePackages.length > 0
@@ -5293,20 +5293,20 @@ ${trkptsXml}
                      title="Apri Pagina Mappe Offline"
                    >
                      {isDownloading ? (
-                       <Loader2 size={18} className="animate-spin text-orange-400" />
+                       <Loader2 size={17} className="animate-spin text-orange-400" />
                      ) : (
-                       <Download size={18} />
+                       <Download size={17} />
                      )}
                      {savedOfflinePackages.length > 0 && !isDownloading && (
-                       <span className="absolute -top-1.5 -right-1.5 min-w-[18px] h-[18px] px-1 rounded-full bg-emerald-600 text-white text-[10px] font-bold flex items-center justify-center border border-zinc-950 shadow">
+                       <span className="absolute -top-1 -right-1 min-w-[17px] h-[17px] px-1 rounded-full bg-emerald-600 text-white text-[9px] font-bold flex items-center justify-center border border-zinc-950 shadow">
                          {savedOfflinePackages.length}
                        </span>
                      )}
                    </button>
-                   <button onClick={() => setIsSidebarOpen(true)} className={`relative w-11 h-11 bg-zinc-900/95 backdrop-blur border rounded-xl flex items-center justify-center shadow-xl transition-all shrink-0 cursor-pointer ${activeCount > 0 ? 'border-orange-500 text-orange-500' : 'border-zinc-800 text-zinc-300 hover:text-white'}`} title="Apri filtri">
-                     <Filter size={18}/>
+                   <button onClick={() => setIsSidebarOpen(true)} className={`relative w-10 h-10 sm:w-11 sm:h-11 bg-zinc-900/95 backdrop-blur border rounded-xl flex items-center justify-center shadow-xl transition-all shrink-0 cursor-pointer ${activeCount > 0 ? 'border-orange-500 text-orange-500' : 'border-zinc-800 text-zinc-300 hover:text-white'}`} title="Apri filtri">
+                     <Filter size={17}/>
                      {activeCount > 0 && (
-                       <span className="absolute -top-1.5 -right-1.5 min-w-[18px] h-[18px] px-1 rounded-full bg-orange-600 text-white text-[10px] font-bold flex items-center justify-center border border-zinc-950 shadow">
+                       <span className="absolute -top-1 -right-1 min-w-[17px] h-[17px] px-1 rounded-full bg-orange-600 text-white text-[9px] font-bold flex items-center justify-center border border-zinc-950 shadow">
                          {activeCount}
                        </span>
                      )}
@@ -5776,7 +5776,7 @@ ${trkptsXml}
                }}
              />
              {viewMode === 'map' && !isTrackPanelOpen && (
-                 <div className={`absolute left-4 z-[1500] flex flex-col items-start gap-2 transition-all duration-300 pointer-events-none ${weatherOverlayActive ? 'bottom-[120px]' : 'bottom-3'}`}>
+                 <div className={`absolute left-2.5 sm:left-4 z-[1500] flex flex-col items-start gap-2 transition-all duration-300 pointer-events-none ${weatherOverlayActive ? 'bottom-[120px]' : 'bottom-3 sm:bottom-6'}`}>
                    {centerWeather && !isOffline && !inspectedLocation && (
                      <div onClick={() => handleOpenWeatherPanel()} className="pointer-events-auto bg-zinc-900/90 backdrop-blur border border-zinc-700/50 rounded-2xl p-2.5 shadow-2xl flex items-center gap-3 animate-in fade-in slide-in-from-bottom-4 cursor-pointer hover:bg-zinc-800 transition-all duration-300 group">
                          <div className="bg-zinc-800 rounded-xl p-1.5 flex items-center justify-center group-hover:bg-zinc-700 transition-colors"> {getWeatherIcon(centerWeather.code)} </div>
@@ -5800,7 +5800,7 @@ ${trkptsXml}
 
              {/* Inspected Arbitrary Map Point Card - Minimale di default con espansione (z-3600 sempre sopra i tasti a destra z-2800) */}
              {viewMode === 'map' && inspectedLocation && !selectedPoi && !isTrackPanelOpen && !customAreaSelecting && (
-               <div className={`absolute left-3 right-[74px] sm:left-4 sm:right-auto ${isInspectedExpanded ? 'sm:w-88 p-3.5' : 'sm:w-72 p-2.5'} z-[3600] bg-zinc-900/95 backdrop-blur-md border border-orange-500/60 rounded-2xl shadow-2xl animate-in fade-in slide-in-from-bottom-4 transition-all duration-200 ${weatherOverlayActive ? 'bottom-[136px]' : 'bottom-4'}`}>
+               <div className={`absolute left-2.5 right-[62px] sm:left-4 sm:right-auto ${isInspectedExpanded ? 'sm:w-88 p-3.5' : 'sm:w-72 p-2.5'} z-[3600] bg-zinc-900/95 backdrop-blur-md border border-orange-500/60 rounded-2xl shadow-2xl animate-in fade-in slide-in-from-bottom-4 transition-all duration-200 ${weatherOverlayActive ? 'bottom-[136px]' : 'bottom-3 sm:bottom-6'}`}>
                  {/* Intestazione compatta (tocca coordinate per copiarle negli appunti) */}
                  <div className="flex items-center justify-between gap-2">
                    <div className="flex items-center gap-2 min-w-0">
@@ -6157,12 +6157,12 @@ ${trkptsXml}
         )}
 
         {viewMode === 'map' && (
-          <div className={`absolute right-4 ${isLayersMenuOpen || isTrailsMenuOpen ? 'z-[4600]' : 'z-[2800]'} flex flex-col items-end gap-3 pointer-events-auto transition-all duration-300 ${isTrackPanelOpen && tracks.length > 0 && !isTrackPanelExpanded ? 'bottom-[calc(40vh+12px)]' : customAreaSelecting ? 'bottom-[215px]' : weatherOverlayActive ? 'bottom-[136px]' : 'bottom-6'}`}>
+          <div className={`absolute right-2.5 sm:right-4 ${isLayersMenuOpen || isTrailsMenuOpen ? 'z-[4600]' : 'z-[2800]'} flex flex-col items-end gap-2 sm:gap-3 pointer-events-auto transition-all duration-300 ${isTrackPanelOpen && tracks.length > 0 && !isTrackPanelExpanded ? 'bottom-[calc(40vh+12px)]' : customAreaSelecting ? 'bottom-[215px]' : weatherOverlayActive ? 'bottom-[136px]' : 'bottom-3 sm:bottom-6'}`}>
              {/* Pulsante Bussola Dinamico: appare quando la mappa è ruotata e riporta il Nord in alto con animazione fluida */}
              {Math.abs(mapBearing % 360) > 0.5 && (
                <button
                  onClick={resetMapNorth}
-                 className="w-12 h-12 bg-zinc-900/95 backdrop-blur border border-orange-500/70 rounded-2xl flex flex-col items-center justify-center shadow-2xl hover:bg-zinc-800 active:scale-95 transition-all cursor-pointer animate-in zoom-in-90 fade-in duration-150 relative group"
+                 className="w-11 h-11 sm:w-12 sm:h-12 bg-zinc-900/95 backdrop-blur border border-orange-500/70 rounded-2xl flex flex-col items-center justify-center shadow-2xl hover:bg-zinc-800 active:scale-95 transition-all cursor-pointer animate-in zoom-in-90 fade-in duration-150 relative group"
                  title="Riporta la mappa con il Nord in alto (0°)"
                >
                  <div
@@ -6257,7 +6257,7 @@ ${trkptsXml}
                     </div>
                   </div>
                )}
-               <button onClick={() => { const next = !isTrailsMenuOpen; setIsTrailsMenuOpen(next); if (next) { setIsLayersMenuOpen(false); setIsTourPlannerOpen(false); } }} className={`w-12 h-12 bg-zinc-900 border ${isTrailsMenuOpen || tracks.length > 0 ? 'border-orange-500 text-orange-500' : 'border-zinc-700 text-zinc-300'} rounded-2xl flex items-center justify-center shadow-lg hover:bg-zinc-800 transition-all cursor-pointer`} title="Tracce GPX"> <Footprints size={22}/> </button>
+               <button onClick={() => { const next = !isTrailsMenuOpen; setIsTrailsMenuOpen(next); if (next) { setIsLayersMenuOpen(false); setIsTourPlannerOpen(false); } }} className={`w-11 h-11 sm:w-12 sm:h-12 bg-zinc-900 border ${isTrailsMenuOpen || tracks.length > 0 ? 'border-orange-500 text-orange-500' : 'border-zinc-700 text-zinc-300'} rounded-2xl flex items-center justify-center shadow-lg hover:bg-zinc-800 transition-all cursor-pointer`} title="Tracce GPX"> <Footprints size={20}/> </button>
              </div>
              
              <div ref={layersMenuRef} className="relative">
@@ -6578,16 +6578,16 @@ ${trkptsXml}
                   </div>
                 </div>
                )}
-               <button onClick={() => { const next = !isLayersMenuOpen; setIsLayersMenuOpen(next); if (next) { setIsTrailsMenuOpen(false); setIsTourPlannerOpen(false); } }} className={`w-12 h-12 bg-zinc-900 border ${isLayersMenuOpen ? 'border-orange-500 text-orange-500' : 'border-zinc-700 text-zinc-300'} rounded-2xl flex items-center justify-center shadow-lg hover:bg-zinc-800 transition-all cursor-pointer`} title="Mappa e Livelli"> <Layers size={22}/> </button>
+               <button onClick={() => { const next = !isLayersMenuOpen; setIsLayersMenuOpen(next); if (next) { setIsTrailsMenuOpen(false); setIsTourPlannerOpen(false); } }} className={`w-11 h-11 sm:w-12 sm:h-12 bg-zinc-900 border ${isLayersMenuOpen ? 'border-orange-500 text-orange-500' : 'border-zinc-700 text-zinc-300'} rounded-2xl flex items-center justify-center shadow-lg hover:bg-zinc-800 transition-all cursor-pointer`} title="Mappa e Livelli"> <Layers size={20}/> </button>
              </div>
             
-            <button onClick={handleLocateUser} className={`w-12 h-12 bg-zinc-900 border ${isLocating ? 'border-orange-500' : 'border-zinc-700'} rounded-2xl flex items-center justify-center shadow-lg hover:bg-zinc-800 transition-all text-zinc-200 cursor-pointer`} title="La mia posizione">
-                {isLocating ? <Loader2 size={24} className="animate-spin text-orange-500"/> : <Locate size={24} className={userLocation ? "text-blue-500 fill-blue-500/20" : ""} />}
+            <button onClick={handleLocateUser} className={`w-11 h-11 sm:w-12 sm:h-12 bg-zinc-900 border ${isLocating ? 'border-orange-500' : 'border-zinc-700'} rounded-2xl flex items-center justify-center shadow-lg hover:bg-zinc-800 transition-all text-zinc-200 cursor-pointer`} title="La mia posizione">
+                {isLocating ? <Loader2 size={21} className="animate-spin text-orange-500"/> : <Locate size={21} className={userLocation ? "text-blue-500 fill-blue-500/20" : ""} />}
             </button>
 
             <div className="flex flex-col rounded-2xl overflow-hidden shadow-lg border border-zinc-700 bg-zinc-900">
-               <button onClick={handleZoomIn} className="w-12 h-12 flex items-center justify-center hover:bg-zinc-800 active:bg-zinc-700 transition-colors text-zinc-200 border-b border-zinc-800 cursor-pointer" title="Ingrandisci"><Plus size={24} /></button>
-               <button onClick={handleZoomOut} className="w-12 h-12 flex items-center justify-center hover:bg-zinc-800 active:bg-zinc-700 transition-colors text-zinc-200 cursor-pointer" title="Riduci"><Minus size={24} /></button>
+               <button onClick={handleZoomIn} className="w-11 h-11 sm:w-12 sm:h-12 flex items-center justify-center hover:bg-zinc-800 active:bg-zinc-700 transition-colors text-zinc-200 border-b border-zinc-800 cursor-pointer" title="Ingrandisci"><Plus size={21} /></button>
+               <button onClick={handleZoomOut} className="w-11 h-11 sm:w-12 sm:h-12 flex items-center justify-center hover:bg-zinc-800 active:bg-zinc-700 transition-colors text-zinc-200 cursor-pointer" title="Riduci"><Minus size={21} /></button>
             </div>
           </div>
         )}
