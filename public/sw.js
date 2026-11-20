@@ -1,4 +1,4 @@
-const APP_CACHE_NAME = 'mountpro-app-v10-zoom-align';
+const APP_CACHE_NAME = 'mountpro-app-v11-hud-refine';
 const TILE_CACHE_NAME = 'mountpro-tiles-v1-offline';
 
 const ASSETS_TO_CACHE = [

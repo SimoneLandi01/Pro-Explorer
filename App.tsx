@@ -669,6 +669,10 @@ interface TargetLockPoint {
   lat: number;
   lng: number;
   altitude: number | null;
+  originLat?: number;
+  originLng?: number;
+  originAltitude?: number | null;
+  originName?: string;
 }
 
 // Tavolozza multi-traccia ad alto contrasto outdoor (supporta tracce GPX multiple senza limite di 2)
@@ -1109,6 +1113,17 @@ ${wptsXml}
   // --- [MODULAR FEATURE 4] TARGET LOCK & COMPASS STATE ---
   const [targetLock, setTargetLock] = useState<TargetLockPoint | null>(null);
   const targetLockLayerGroupRef = useRef<L.LayerGroup | null>(null);
+  const [pickingTargetOrigin, setPickingTargetOrigin] = useState<{
+    lat: number;
+    lng: number;
+    altitude: number | null;
+    name: string;
+  } | null>(null);
+  const pickingTargetOriginRef = useRef<typeof pickingTargetOrigin>(null);
+  useEffect(() => {
+    pickingTargetOriginRef.current = pickingTargetOrigin;
+  }, [pickingTargetOrigin]);
+  const [isInspectedExpanded, setIsInspectedExpanded] = useState(false);
 
   // --- [MODULAR FEATURE 1] GPX WEATHER WATCH STATE (CON DATA E ORA PARTENZA + INPUT TASTIERA MOBILE) ---
   const [gpxWeatherWatch, setGpxWeatherWatch] = useState<Record<string, GpxWeatherWatchData>>({});
@@ -1791,7 +1806,6 @@ ${wptsXml}
   const rainLayerRef = useRef<L.TileLayer | null>(null);
   const scaleSlotRef = useRef<HTMLDivElement | null>(null);
   const scaleControlElRef = useRef<HTMLElement | null>(null);
-  const [currentMapZoom, setCurrentMapZoom] = useState<number>(() => mapViewState.current.zoom);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const layersMenuRef = useRef<HTMLDivElement>(null);
   const trailsMenuRef = useRef<HTMLDivElement>(null);
@@ -2249,11 +2263,14 @@ ${wptsXml}
 
     if (!targetLock) return;
 
-    const origin = userLocation || mapRef.current.getCenter();
+    const origin =
+      targetLock.originLat !== undefined && targetLock.originLng !== undefined
+        ? { lat: targetLock.originLat, lng: targetLock.originLng }
+        : userLocation || mapRef.current.getCenter();
     const targetLatLng: [number, number] = [targetLock.lat, targetLock.lng];
     const originLatLng: [number, number] = [origin.lat, origin.lng];
 
-    // Linea tattica tratteggiata dal punto utente/centro al Target bloccato
+    // Linea tattica tratteggiata dal punto selezionato/utente/centro al Target bloccato
     L.polyline([originLatLng, targetLatLng], {
       color: '#06b6d4',
       weight: 2.5,
@@ -2261,6 +2278,18 @@ ${wptsXml}
       dashArray: '8, 8',
       lineCap: 'round',
     }).addTo(targetLockLayerGroupRef.current);
+
+    if (targetLock.originLat !== undefined && targetLock.originLng !== undefined) {
+      const originDotIcon = L.divIcon({
+        className: 'target-origin-dot',
+        html: `<div class="w-3 h-3 rounded-full bg-orange-500 border-2 border-black shadow -translate-x-1/2 -translate-y-1/2 pointer-events-none"></div>`,
+        iconSize: [0, 0],
+        iconAnchor: [0, 0],
+      });
+      L.marker(originLatLng, { icon: originDotIcon, interactive: false, zIndexOffset: 9000 }).addTo(
+        targetLockLayerGroupRef.current
+      );
+    }
 
     // Anello luminoso sul Target bloccato
     const ringIcon = L.divIcon({
@@ -2867,6 +2896,7 @@ ${trkptsXml}
     setIsDetailPanelOpen(false);
     setIsTrackPanelOpen(false);
     setIsWeatherPanelOpen(false);
+    setIsInspectedExpanded(false);
 
     setInspectedLocation({
       lat,
@@ -2878,18 +2908,15 @@ ${trkptsXml}
     });
 
     if (mapRef.current) {
+      // Solo croce arancio con contorno nero centrata esattamente sulle coordinate
       const pinIcon = L.divIcon({
         className: 'inspected-point-pin',
         html: `
-          <div class="relative flex items-center justify-center -translate-x-1/2 -translate-y-full cursor-pointer group">
-            <span class="absolute w-8 h-8 rounded-full bg-orange-500/35 animate-ping pointer-events-none"></span>
-            <div class="relative w-8 h-8 rounded-full bg-zinc-950 border-2 border-orange-500 shadow-2xl flex items-center justify-center text-orange-400 transition-transform group-hover:scale-110">
-              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-                <circle cx="12" cy="12" r="3"></circle>
-                <path d="M12 2v3m0 14v3M2 12h3m14 0h3"></path>
-              </svg>
-            </div>
-            <div class="w-1.5 h-1.5 rounded-full bg-orange-500 mt-0.5 shadow-md"></div>
+          <div class="relative flex items-center justify-center -translate-x-1/2 -translate-y-1/2 pointer-events-none">
+            <svg xmlns="http://www.w3.org/2000/svg" width="26" height="26" viewBox="0 0 24 24" fill="none" stroke-linecap="round">
+              <path d="M12 3v18M3 12h18" stroke="#000000" stroke-width="5" />
+              <path d="M12 3v18M3 12h18" stroke="#f97316" stroke-width="2.5" />
+            </svg>
           </div>
         `,
         iconSize: [0, 0],
@@ -2902,6 +2929,7 @@ ${trkptsXml}
           zIndexOffset: 15000,
         }).addTo(mapRef.current);
       } else {
+        inspectedMarkerRef.current.setIcon(pinIcon);
         inspectedMarkerRef.current.setLatLng([lat, lng]);
       }
     }
@@ -3027,7 +3055,6 @@ ${trkptsXml}
               mapOuterWrapperRef.current.appendChild(scaleEl);
             }
           }
-          setCurrentMapZoom(map.getZoom());
 
           // Adegua mouseEventToContainerPoint per compensare la rotazione della mappa
           map.mouseEventToContainerPoint = function (e: MouseEvent | Touch) {
@@ -3347,9 +3374,43 @@ ${trkptsXml}
             handleSelectMapPointRef.current(e.latlng.lat, e.latlng.lng);
           });
 
-          map.on('click', () => { 
+          map.on('click', (e: L.LeafletMouseEvent) => { 
             if (isLongPressTriggeredRef.current) {
               isLongPressTriggeredRef.current = false;
+              return;
+            }
+            // Se l'utente ha premuto "Punta" dal punto selezionato, il tocco successivo sceglie la destinazione sulla mappa
+            if (pickingTargetOriginRef.current) {
+              const orig = pickingTargetOriginRef.current;
+              const tLat = e.latlng.lat;
+              const tLng = e.latlng.lng;
+              const lockId = `point-${tLat.toFixed(4)}-${tLng.toFixed(4)}`;
+              setPickingTargetOrigin(null);
+              setTargetLock({
+                id: lockId,
+                name: `${tLat.toFixed(4)}°, ${tLng.toFixed(4)}°`,
+                lat: tLat,
+                lng: tLng,
+                altitude: null,
+                originLat: orig.lat,
+                originLng: orig.lng,
+                originAltitude: orig.altitude,
+                originName: orig.name,
+              });
+              showToast("Destinazione bloccata dal punto selezionato!");
+              fetchAltitudeForCoordinate(tLat, tLng)
+                .then(alt => {
+                  setTargetLock(prev =>
+                    prev && prev.id === lockId
+                      ? {
+                          ...prev,
+                          altitude: alt,
+                          name: alt ? `Quota ${alt}m` : prev.name,
+                        }
+                      : prev
+                  );
+                })
+                .catch(() => {});
               return;
             }
             // Singolo click su mappa: chiude i pannelli e deseleziona punto / POI
@@ -3359,14 +3420,10 @@ ${trkptsXml}
             setSelectedPoi(null); 
             clearInspectedLocation();
           }); 
-          map.on('zoomend', () => {
-            setCurrentMapZoom(map.getZoom());
-          });
           map.on('moveend', () => { 
             const c = map.getCenter(); 
             const z = map.getZoom();
-            mapViewState.current = { center: { lat: c.lat, lng: c.lng }, zoom: z };
-            setCurrentMapZoom(z); 
+            mapViewState.current = { center: { lat: c.lat, lng: c.lng }, zoom: z }; 
             if (userSettingsRef.current.autoSaveMapPosition) {
               saveMapStartupState({ lat: c.lat, lng: c.lng, zoom: z });
             }
@@ -5072,29 +5129,68 @@ ${trkptsXml}
              })()}
           </div>
           <div className="flex justify-center flex-wrap gap-1.5 animate-in fade-in slide-in-from-top-2 pointer-events-auto max-w-lg mx-auto"> 
-             {showFavoritesOnly && (<button onClick={() => setShowFavoritesOnly(false)} className="px-2.5 py-0.5 bg-red-600/95 hover:bg-red-500 shadow-md rounded-full text-[10px] font-bold text-white border border-red-500 flex items-center gap-1 cursor-pointer"><Heart size={10} className="fill-white"/> Preferiti <X size={10} className="opacity-75"/></button>)} 
+             {showFavoritesOnly && (
+               <button onClick={() => setShowFavoritesOnly(false)} className="w-7 h-7 bg-red-600/95 hover:bg-red-500 shadow-md rounded-full text-white border border-red-500 flex items-center justify-center cursor-pointer transition-transform active:scale-95" title="Solo preferiti (tocca per rimuovere)">
+                 <Heart size={13} className="fill-white"/>
+               </button>
+             )} 
              {selectedTypes.length > 0 && selectedTypes.length < 5 && (
                 selectedTypes.map(st => (
                   <button 
                     key={st} 
                     onClick={() => toggleType(st)}
-                    className="px-2.5 py-0.5 bg-orange-600/95 hover:bg-orange-500 shadow-md rounded-full text-[10px] font-bold text-white border border-orange-500 flex items-center gap-1 cursor-pointer transition-transform active:scale-95"
-                    title="Tocca per rimuovere"
+                    className="w-7 h-7 bg-orange-600/95 hover:bg-orange-500 shadow-md rounded-full text-white border border-orange-500 flex items-center justify-center cursor-pointer transition-transform active:scale-95"
+                    title={`${st} (tocca per rimuovere)`}
                   >
-                     {st === POIType.BIVOUAC ? <Tent size={10}/> : st === POIType.REFUGE ? <Home size={10}/> : st === POIType.FOUNTAIN ? <Droplets size={10}/> : <MapPin size={10}/>}
-                     {st}
-                     <X size={10} className="opacity-70 hover:opacity-100 ml-0.5"/>
+                     {st === POIType.BIVOUAC ? <Tent size={13}/> : st === POIType.REFUGE ? <Home size={13}/> : st === POIType.FOUNTAIN ? <Droplets size={13}/> : st === POIType.PICNIC ? <Leaf size={13}/> : st === POIType.VIEWPOINT ? <Compass size={13}/> : <MapPin size={13}/>}
                   </button>
                 ))
              )}
-             {filterWater && <button onClick={() => setFilterWater(false)} className="px-2.5 py-0.5 bg-blue-600/95 hover:bg-blue-500 shadow-md rounded-full text-[10px] font-bold text-white border border-blue-500 flex items-center gap-1 cursor-pointer">Acqua <X size={10} className="opacity-75"/></button>} 
-             {filterByTrack && <button onClick={() => setFilterByTrack(false)} className="px-2.5 py-0.5 bg-purple-600/95 hover:bg-purple-500 shadow-md rounded-full text-[10px] font-bold text-white border border-purple-500 flex items-center gap-1 cursor-pointer"><Route size={10}/> Sul Percorso <X size={10} className="opacity-75"/></button>} 
+             {filterWater && (
+               <button onClick={() => setFilterWater(false)} className="w-7 h-7 bg-blue-600/95 hover:bg-blue-500 shadow-md rounded-full text-white border border-blue-500 flex items-center justify-center cursor-pointer transition-transform active:scale-95" title="Acqua nelle vicinanze (tocca per rimuovere)">
+                 <Droplets size={13}/>
+               </button>
+             )} 
+             {filterByTrack && (
+               <button onClick={() => setFilterByTrack(false)} className="w-7 h-7 bg-purple-600/95 hover:bg-purple-500 shadow-md rounded-full text-white border border-purple-500 flex items-center justify-center cursor-pointer transition-transform active:scale-95" title="Sul percorso GPX (tocca per rimuovere)">
+                 <Route size={13}/>
+               </button>
+             )} 
           </div>
+
+          {isSearchingArea && viewMode === 'map' && (
+            <div className="flex justify-center pointer-events-none animate-in fade-in slide-in-from-top-1">
+              <span className="px-3 py-1 bg-zinc-900/95 backdrop-blur shadow-xl rounded-full text-[11px] font-bold text-orange-400 border border-orange-500/50 flex items-center gap-2">
+                <Loader2 size={12} className="animate-spin"/> Aggiorno mappa...
+              </span>
+            </div>
+          )}
+
+          {pickingTargetOrigin && viewMode === 'map' && (
+            <div className="pointer-events-auto mx-auto bg-cyan-950/95 backdrop-blur-md border border-cyan-400/70 rounded-full px-3.5 py-1.5 shadow-2xl flex items-center gap-2.5 animate-in fade-in slide-in-from-top-2">
+              <Compass size={14} className="text-cyan-400 animate-pulse shrink-0" />
+              <span className="text-[11px] font-bold text-cyan-100">
+                Tocca un altro punto sulla mappa per puntarlo
+              </span>
+              <button
+                type="button"
+                onClick={() => setPickingTargetOrigin(null)}
+                className="px-2 py-0.5 rounded-full bg-zinc-900/80 hover:bg-zinc-800 text-[10px] font-bold text-zinc-300 hover:text-white border border-zinc-700 cursor-pointer"
+              >
+                Annulla
+              </button>
+            </div>
+          )}
 
           {/* --- [MODULAR FEATURE 4] TACTICAL COMPASS & TARGET LOCK HUD PILL --- */}
           {targetLock && (() => {
-            const origin = userLocation || mapViewState.current.center;
-            const originAlt = currentStatsTrack?.points?.[0]?.ele || 1200;
+            const hasCustomOrigin = targetLock.originLat !== undefined && targetLock.originLng !== undefined;
+            const origin = hasCustomOrigin
+              ? { lat: targetLock.originLat!, lng: targetLock.originLng! }
+              : userLocation || mapViewState.current.center;
+            const originAlt = hasCustomOrigin
+              ? (targetLock.originAltitude ?? (currentStatsTrack?.points?.[0]?.ele || 1200))
+              : (currentStatsTrack?.points?.[0]?.ele || 1200);
             const cai = computeCaiWalkingEstimate(
               origin.lat,
               origin.lng,
@@ -5467,13 +5563,6 @@ ${trkptsXml}
                  transformOrigin: 'center center',
                }}
              />
-             {isSearchingArea && (
-                <div className="absolute top-[72px] left-1/2 -translate-x-1/2 z-[2500] pointer-events-none animate-in fade-in slide-in-from-top-2">
-                     <span className="px-3 py-1 bg-zinc-900/95 backdrop-blur shadow-xl rounded-full text-[11px] font-bold text-orange-400 border border-orange-500/50 flex items-center gap-2">
-                        <Loader2 size={12} className="animate-spin"/> Aggiorno mappa...
-                     </span>
-                </div>
-             )}
              {viewMode === 'map' && !isTrackPanelOpen && (
                  <div className={`absolute left-4 z-[1500] flex flex-col items-start gap-2 transition-all duration-300 pointer-events-none ${weatherOverlayActive ? 'bottom-[120px]' : 'bottom-3'}`}>
                    {centerWeather && !isOffline && !inspectedLocation && (
@@ -5482,8 +5571,8 @@ ${trkptsXml}
                          <div> <div className="text-xs font-bold text-white leading-none mb-0.5">{centerWeather.temp}°C</div> <div className="text-[10px] text-blue-400 font-bold flex items-center gap-1"> <Droplets size={10} className="fill-blue-400"/> {centerWeather.humidity}% </div> </div>
                      </div>
                    )}
-                   {/* Indicatore Scala Metrica & Livello Zoom allineato a sinistra sotto il meteo */}
-                   <div className={`bg-zinc-900/90 backdrop-blur border border-zinc-700/50 rounded-xl px-2.5 py-1.5 shadow-xl flex items-center gap-2 ${inspectedLocation ? 'hidden' : ''}`}>
+                   {/* Indicatore Scala Metrica allineato a sinistra sotto il meteo */}
+                   <div className={`bg-zinc-900/90 backdrop-blur border border-zinc-700/50 rounded-xl px-2.5 py-1.5 shadow-xl flex items-center ${inspectedLocation ? 'hidden' : ''}`}>
                      <div
                        ref={(el) => {
                          scaleSlotRef.current = el;
@@ -5493,151 +5582,181 @@ ${trkptsXml}
                        }}
                        className="flex items-center"
                      />
-                     <span
-                       className="pl-2 border-l border-zinc-700/70 text-[11px] font-mono font-semibold text-orange-400 tabular-nums leading-tight"
-                       title="Livello di zoom attuale"
-                     >
-                       Z{Number.isInteger(currentMapZoom) ? currentMapZoom : currentMapZoom.toFixed(1)}
-                     </span>
                    </div>
                  </div>
              )}
 
-             {/* Inspected Arbitrary Map Point Card */}
+             {/* Inspected Arbitrary Map Point Card - Minimale di default con espansione */}
              {viewMode === 'map' && inspectedLocation && !selectedPoi && !isTrackPanelOpen && (
-               <div className={`absolute left-3 right-[72px] sm:left-4 sm:right-auto sm:w-88 z-[3200] bg-zinc-900/95 backdrop-blur-md border border-orange-500/60 rounded-2xl p-3.5 shadow-2xl animate-in fade-in slide-in-from-bottom-4 transition-all duration-300 ${weatherOverlayActive ? 'bottom-[136px]' : 'bottom-10'}`}>
-                 <div className="flex items-start justify-between gap-2.5 mb-2.5">
-                   <div className="flex items-center gap-2.5 min-w-0">
-                     <div className="w-8 h-8 rounded-xl bg-orange-600/20 border border-orange-500/40 flex items-center justify-center text-orange-400 shrink-0">
-                       <Compass size={16} />
-                     </div>
+               <div className={`absolute left-3 right-[72px] sm:left-4 sm:right-auto ${isInspectedExpanded ? 'sm:w-88 p-3.5' : 'sm:w-72 p-2.5'} z-[3200] bg-zinc-900/95 backdrop-blur-md border border-orange-500/60 rounded-2xl shadow-2xl animate-in fade-in slide-in-from-bottom-4 transition-all duration-200 ${weatherOverlayActive ? 'bottom-[136px]' : 'bottom-4'}`}>
+                 {/* Intestazione compatta */}
+                 <div className="flex items-center justify-between gap-2">
+                   <div className="flex items-center gap-2 min-w-0">
+                     <span className="w-2 h-2 rounded-full bg-orange-500 shrink-0" />
                      <div className="min-w-0">
-                       <h4 className="text-xs font-bold text-white uppercase tracking-wider truncate">Punto Selezionato</h4>
-                       <p className="text-[11px] font-mono text-zinc-400 truncate">
-                         {inspectedLocation.lat.toFixed(5)}° N, {inspectedLocation.lng.toFixed(5)}° E
+                       <p className="text-[11px] font-mono font-bold text-zinc-100 truncate">
+                         {inspectedLocation.lat.toFixed(5)}°, {inspectedLocation.lng.toFixed(5)}°
                        </p>
-                     </div>
-                   </div>
-                   <button 
-                     onClick={clearInspectedLocation}
-                     className="p-1.5 text-zinc-400 hover:text-white rounded-lg hover:bg-zinc-800 transition-colors cursor-pointer shrink-0"
-                     title="Deseleziona punto"
-                   >
-                     <X size={16} />
-                   </button>
-                 </div>
-
-                 <div className="grid grid-cols-2 gap-2 mb-2.5">
-                   {/* Quota DEM */}
-                   <div className="bg-zinc-800/80 border border-zinc-700/60 rounded-xl p-2 flex items-center gap-2">
-                     <Mountain size={15} className="text-orange-400 shrink-0" />
-                     <div className="min-w-0">
-                       <div className="text-[9px] uppercase font-bold text-zinc-400">Quota DEM</div>
-                       <div className="text-xs font-mono font-bold text-zinc-100 truncate">
-                         {inspectedLocation.isLoadingAltitude ? (
-                           <span className="flex items-center gap-1 text-zinc-400 font-sans text-[11px]">
-                             <Loader2 size={11} className="animate-spin text-orange-400" /> Calcolo...
+                       {!isInspectedExpanded && (
+                         <div className="flex items-center gap-2 text-[11px] font-mono text-zinc-400 mt-0.5">
+                           <span className="text-orange-400 font-bold">
+                             {inspectedLocation.isLoadingAltitude
+                               ? '...'
+                               : inspectedLocation.altitude !== null
+                               ? `${inspectedLocation.altitude} m`
+                               : 'N/D'}
                            </span>
-                         ) : inspectedLocation.altitude !== null ? (
-                           `${inspectedLocation.altitude} m`
-                         ) : (
-                           'N/D'
-                         )}
-                       </div>
-                     </div>
-                   </div>
-
-                   {/* Meteo Punto */}
-                   <div className="bg-zinc-800/80 border border-zinc-700/60 rounded-xl p-2 flex items-center gap-2">
-                     <div className="shrink-0">
-                       {inspectedLocation.weather ? (
-                         getWeatherIcon(inspectedLocation.weather.code)
-                       ) : (
-                         <Sun size={15} className="text-zinc-500" />
+                           {inspectedLocation.weather && (
+                             <>
+                               <span>·</span>
+                               <span>{inspectedLocation.weather.temp}°C</span>
+                             </>
+                           )}
+                         </div>
                        )}
                      </div>
-                     <div className="min-w-0">
-                       <div className="text-[9px] uppercase font-bold text-zinc-400">Meteo Punto</div>
-                       <div className="text-xs font-mono font-bold text-zinc-100 truncate">
-                         {inspectedLocation.isLoadingWeather ? (
-                           <span className="flex items-center gap-1 text-zinc-400 font-sans text-[11px]">
-                             <Loader2 size={11} className="animate-spin text-blue-400" /> Meteo...
-                           </span>
-                         ) : inspectedLocation.weather ? (
-                           `${inspectedLocation.weather.temp}°C · ${inspectedLocation.weather.humidity}%`
-                         ) : (
-                           'N/D'
-                         )}
-                       </div>
-                     </div>
+                   </div>
+                   <div className="flex items-center gap-1 shrink-0">
+                     <button
+                       type="button"
+                       onClick={() => setIsInspectedExpanded(prev => !prev)}
+                       className="p-1 text-zinc-400 hover:text-white rounded-lg hover:bg-zinc-800 transition-colors cursor-pointer"
+                       title={isInspectedExpanded ? 'Riduci scheda' : 'Espandi dettagli'}
+                     >
+                       {isInspectedExpanded ? <ChevronDown size={15} /> : <ChevronUp size={15} />}
+                     </button>
+                     <button 
+                       onClick={() => {
+                         setPickingTargetOrigin(null);
+                         clearInspectedLocation();
+                       }}
+                       className="p-1 text-zinc-400 hover:text-white rounded-lg hover:bg-zinc-800 transition-colors cursor-pointer"
+                       title="Deseleziona punto"
+                     >
+                       <X size={15} />
+                     </button>
                    </div>
                  </div>
 
-                 {/* --- [MODULAR FEATURE 2] SOLAR EPHEMERIS & CAI WALKING ESTIMATE FOR INSPECTED POINT --- */}
-                 {(() => {
-                   const solar = computeSolarTimes(
-                     inspectedLocation.lat,
-                     inspectedLocation.lng,
-                     inspectedLocation.altitude || 0
-                   );
-                   const origin = userLocation || mapViewState.current.center;
-                   const originLabel = userLocation ? 'da GPS' : 'da Centro';
-                   const originAlt = currentStatsTrack?.points?.[0]?.ele || 1200;
-                   const cai = computeCaiWalkingEstimate(
-                     origin.lat,
-                     origin.lng,
-                     originAlt,
-                     inspectedLocation.lat,
-                     inspectedLocation.lng,
-                     inspectedLocation.altitude || originAlt
-                   );
-                   return (
-                     <div className="grid grid-cols-2 gap-2 mb-2.5">
-                       <div className="bg-zinc-800/60 border border-zinc-700/50 rounded-xl p-2 flex items-center gap-2">
-                         <Footprints size={14} className="text-emerald-400 shrink-0" />
+                 {isInspectedExpanded && (
+                   <div className="mt-2.5 space-y-2">
+                     <div className="grid grid-cols-2 gap-2">
+                       {/* Quota DEM */}
+                       <div className="bg-zinc-800/80 border border-zinc-700/60 rounded-xl p-2 flex items-center gap-2">
+                         <Mountain size={15} className="text-orange-400 shrink-0" />
                          <div className="min-w-0">
-                           <div className="text-[9px] uppercase font-bold text-zinc-400 truncate">
-                             Stima CAI ({originLabel})
-                           </div>
-                           <div className="text-[11px] font-mono font-bold text-zinc-100 truncate">
-                             ~{cai.caiTimeFormatted} · {cai.linearDistKm.toFixed(1)}km ({cai.bearingDeg}°{cai.bearingCardinal})
+                           <div className="text-[9px] uppercase font-bold text-zinc-400">Quota DEM</div>
+                           <div className="text-xs font-mono font-bold text-zinc-100 truncate">
+                             {inspectedLocation.isLoadingAltitude ? (
+                               <span className="flex items-center gap-1 text-zinc-400 font-sans text-[11px]">
+                                 <Loader2 size={11} className="animate-spin text-orange-400" /> Calcolo...
+                               </span>
+                             ) : inspectedLocation.altitude !== null ? (
+                               `${inspectedLocation.altitude} m`
+                             ) : (
+                               'N/D'
+                             )}
                            </div>
                          </div>
                        </div>
-                       <div className="bg-zinc-800/60 border border-zinc-700/50 rounded-xl p-2 flex items-center gap-2">
-                         <Sunrise size={14} className="text-amber-400 shrink-0" />
+
+                       {/* Meteo Punto */}
+                       <div className="bg-zinc-800/80 border border-zinc-700/60 rounded-xl p-2 flex items-center gap-2">
+                         <div className="shrink-0">
+                           {inspectedLocation.weather ? (
+                             getWeatherIcon(inspectedLocation.weather.code)
+                           ) : (
+                             <Sun size={15} className="text-zinc-500" />
+                           )}
+                         </div>
                          <div className="min-w-0">
-                           <div className="text-[9px] uppercase font-bold text-zinc-400 truncate">
-                             Alba / Tramonto
-                           </div>
-                           <div className="text-[11px] font-mono font-bold text-zinc-100 truncate">
-                             {solar.sunrise} · {solar.sunset}
+                           <div className="text-[9px] uppercase font-bold text-zinc-400">Meteo Punto</div>
+                           <div className="text-xs font-mono font-bold text-zinc-100 truncate">
+                             {inspectedLocation.isLoadingWeather ? (
+                               <span className="flex items-center gap-1 text-zinc-400 font-sans text-[11px]">
+                                 <Loader2 size={11} className="animate-spin text-blue-400" /> Meteo...
+                               </span>
+                             ) : inspectedLocation.weather ? (
+                               `${inspectedLocation.weather.temp}°C · ${inspectedLocation.weather.humidity}%`
+                             ) : (
+                               'N/D'
+                             )}
                            </div>
                          </div>
                        </div>
                      </div>
-                   );
-                 })()}
 
-                 {/* Actions */}
-                 <div className="flex items-center gap-1.5 pt-2 border-t border-zinc-800">
-                   <button
-                     onClick={() => {
-                       const coordsStr = `${inspectedLocation.lat.toFixed(5)}, ${inspectedLocation.lng.toFixed(5)}`;
-                       navigator.clipboard?.writeText(coordsStr);
-                       showToast(`Coordinate copiate: ${coordsStr}`);
-                     }}
-                     className="flex-1 py-1.5 px-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-[11px] font-semibold rounded-lg border border-zinc-700 transition-colors flex items-center justify-center gap-1 cursor-pointer"
-                   >
-                     <Save size={12} className="text-zinc-400 shrink-0" /> <span className="truncate">GPS</span>
-                   </button>
+                     {/* --- [MODULAR FEATURE 2] SOLAR EPHEMERIS & CAI WALKING ESTIMATE FOR INSPECTED POINT --- */}
+                     {(() => {
+                       const solar = computeSolarTimes(
+                         inspectedLocation.lat,
+                         inspectedLocation.lng,
+                         inspectedLocation.altitude || 0
+                       );
+                       const origin = userLocation || mapViewState.current.center;
+                       const originLabel = userLocation ? 'da GPS' : 'da Centro';
+                       const originAlt = currentStatsTrack?.points?.[0]?.ele || 1200;
+                       const cai = computeCaiWalkingEstimate(
+                         origin.lat,
+                         origin.lng,
+                         originAlt,
+                         inspectedLocation.lat,
+                         inspectedLocation.lng,
+                         inspectedLocation.altitude || originAlt
+                       );
+                       return (
+                         <div className="grid grid-cols-2 gap-2">
+                           <div className="bg-zinc-800/60 border border-zinc-700/50 rounded-xl p-2 flex items-center gap-2">
+                             <Footprints size={14} className="text-emerald-400 shrink-0" />
+                             <div className="min-w-0">
+                               <div className="text-[9px] uppercase font-bold text-zinc-400 truncate">
+                                 Stima CAI ({originLabel})
+                               </div>
+                               <div className="text-[11px] font-mono font-bold text-zinc-100 truncate">
+                                 ~{cai.caiTimeFormatted} · {cai.linearDistKm.toFixed(1)}km ({cai.bearingDeg}°{cai.bearingCardinal})
+                               </div>
+                             </div>
+                           </div>
+                           <div className="bg-zinc-800/60 border border-zinc-700/50 rounded-xl p-2 flex items-center gap-2">
+                             <Sunrise size={14} className="text-amber-400 shrink-0" />
+                             <div className="min-w-0">
+                               <div className="text-[9px] uppercase font-bold text-zinc-400 truncate">
+                                 Alba / Tramonto
+                               </div>
+                               <div className="text-[11px] font-mono font-bold text-zinc-100 truncate">
+                                 {solar.sunrise} · {solar.sunset}
+                               </div>
+                             </div>
+                           </div>
+                         </div>
+                       );
+                     })()}
+                   </div>
+                 )}
 
-                   <button
-                     onClick={() => handleOpenWeatherPanel({ lat: inspectedLocation.lat, lng: inspectedLocation.lng })}
-                     className="flex-1 py-1.5 px-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-[11px] font-semibold rounded-lg border border-zinc-700 transition-colors flex items-center justify-center gap-1 cursor-pointer"
-                   >
-                     <Sun size={12} className="text-yellow-400 shrink-0" /> <span className="truncate">Meteo</span>
-                   </button>
+                 {/* Azioni */}
+                 <div className="flex items-center gap-1.5 pt-2 mt-2 border-t border-zinc-800">
+                   {isInspectedExpanded && (
+                     <>
+                       <button
+                         onClick={() => {
+                           const coordsStr = `${inspectedLocation.lat.toFixed(5)}, ${inspectedLocation.lng.toFixed(5)}`;
+                           navigator.clipboard?.writeText(coordsStr);
+                           showToast(`Coordinate copiate: ${coordsStr}`);
+                         }}
+                         className="flex-1 py-1.5 px-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-[11px] font-semibold rounded-lg border border-zinc-700 transition-colors flex items-center justify-center gap-1 cursor-pointer"
+                       >
+                         <Save size={12} className="text-zinc-400 shrink-0" /> <span className="truncate">GPS</span>
+                       </button>
+
+                       <button
+                         onClick={() => handleOpenWeatherPanel({ lat: inspectedLocation.lat, lng: inspectedLocation.lng })}
+                         className="flex-1 py-1.5 px-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-[11px] font-semibold rounded-lg border border-zinc-700 transition-colors flex items-center justify-center gap-1 cursor-pointer"
+                       >
+                         <Sun size={12} className="text-yellow-400 shrink-0" /> <span className="truncate">Meteo</span>
+                       </button>
+                     </>
+                   )}
 
                    <button
                      onClick={() => {
@@ -5651,7 +5770,7 @@ ${trkptsXml}
                          category: 'Punto Mappa',
                        });
                      }}
-                     className="py-1.5 px-2 bg-emerald-950/70 hover:bg-emerald-900/70 text-emerald-300 border border-emerald-500/40 text-[11px] font-semibold rounded-lg transition-colors flex items-center justify-center gap-1 cursor-pointer shrink-0"
+                     className="flex-1 py-1.5 px-2 bg-emerald-950/70 hover:bg-emerald-900/70 text-emerald-300 border border-emerald-500/40 text-[11px] font-semibold rounded-lg transition-colors flex items-center justify-center gap-1 cursor-pointer"
                      title="Aggiungi questo punto come tappa del Tour"
                    >
                      <Route size={12} /> +Tour
@@ -5659,25 +5778,27 @@ ${trkptsXml}
 
                    <button
                      onClick={() => {
-                       const lockId = `point-${inspectedLocation.lat.toFixed(4)}-${inspectedLocation.lng.toFixed(4)}`;
-                       setTargetLock({
-                         id: lockId,
-                         name: `Quota ${inspectedLocation.altitude ? `${inspectedLocation.altitude}m` : 'Mappa'}`,
+                       setPickingTargetOrigin({
                          lat: inspectedLocation.lat,
                          lng: inspectedLocation.lng,
                          altitude: inspectedLocation.altitude,
+                         name: `Quota ${inspectedLocation.altitude ? `${inspectedLocation.altitude}m` : 'Mappa'}`,
                        });
-                       showToast("Punto bloccato sulla Bussola Target!");
+                       showToast("Tocca un altro punto sulla mappa per puntarlo!");
                      }}
-                     className="py-1.5 px-2 bg-cyan-950/70 hover:bg-cyan-900/70 text-cyan-300 border border-cyan-500/40 text-[11px] font-semibold rounded-lg transition-colors flex items-center justify-center gap-1 cursor-pointer shrink-0"
-                     title="Blocca come destinazione Bussola"
+                     className={`flex-1 py-1.5 px-2 border text-[11px] font-semibold rounded-lg transition-colors flex items-center justify-center gap-1 cursor-pointer ${
+                       pickingTargetOrigin
+                         ? 'bg-cyan-600 text-white border-cyan-400'
+                         : 'bg-cyan-950/70 hover:bg-cyan-900/70 text-cyan-300 border-cyan-500/40'
+                     }`}
+                     title="Seleziona un altro punto sulla mappa da puntare"
                    >
                      <Compass size={12} /> Punta
                    </button>
 
                    <button
                      onClick={handleSaveWaypointFromPoint}
-                     className="py-1.5 px-2.5 bg-orange-600 hover:bg-orange-500 text-white text-[11px] font-semibold rounded-lg transition-colors flex items-center justify-center gap-1 cursor-pointer shadow-sm shrink-0"
+                     className="flex-1 py-1.5 px-2.5 bg-orange-600 hover:bg-orange-500 text-white text-[11px] font-semibold rounded-lg transition-colors flex items-center justify-center gap-1 cursor-pointer shadow-sm"
                      title="Salva punto nei tuoi POI"
                    >
                      <Plus size={13} /> Salva
