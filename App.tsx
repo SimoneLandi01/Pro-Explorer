@@ -4121,6 +4121,53 @@ ${trkptsXml}
         .slice(0, 3);
   }, [selectedPoi, allPois]);
 
+  // Cronologia navigazione nella schermata Dettagli (es. Bivacco -> Fonte d'acqua -> Freccia Indietro -> Bivacco)
+  const [poiDetailHistory, setPoiDetailHistory] = useState<POI[]>([]);
+  const waterAltRequestedIdsRef = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    if (!isDetailPanelOpen) {
+      setPoiDetailHistory([]);
+    }
+  }, [isDetailPanelOpen]);
+
+  // Auto-risoluzione altitudine DEM per le fonti d'acqua vicine prive di quota OSM (evita "0m")
+  useEffect(() => {
+    if (!isDetailPanelOpen || nearestWaterSources.length === 0) return;
+    const missing = nearestWaterSources.filter(
+      w => (!w.altitude || w.altitude <= 0) && !waterAltRequestedIdsRef.current.has(w.id)
+    );
+    if (missing.length === 0) return;
+    missing.forEach(w => waterAltRequestedIdsRef.current.add(w.id));
+
+    enrichPoisWithAltitude(missing)
+      .then(enriched => {
+        const updates = new Map<string, number>();
+        enriched.forEach(p => {
+          if (p.altitude && p.altitude > 0) updates.set(p.id, p.altitude);
+        });
+        if (updates.size === 0) return;
+        const toPersist: POI[] = [];
+        setAllPois(prev =>
+          prev.map(p => {
+            const newAlt = updates.get(p.id);
+            if (newAlt !== undefined && (!p.altitude || p.altitude <= 0)) {
+              const updated = { ...p, altitude: newAlt };
+              toPersist.push(updated);
+              return updated;
+            }
+            return p;
+          })
+        );
+        if (toPersist.length > 0) {
+          dbService.savePois(toPersist).catch(() => {});
+        }
+      })
+      .catch(() => {
+        missing.forEach(w => waterAltRequestedIdsRef.current.delete(w.id));
+      });
+  }, [isDetailPanelOpen, nearestWaterSources]);
+
   const currentStatsTrack = useMemo(() => {
       if (tracks.length === 0) return null;
       if (focusedTrackId) return tracks.find(t => t.id === focusedTrackId) || tracks[0];
@@ -7225,9 +7272,27 @@ ${trkptsXml}
       <div ref={detailPanelRef} className={`fixed inset-0 z-[5000] bg-zinc-950 transition-transform duration-300 ease-in-out flex flex-col ${isDetailPanelOpen && selectedPoi ? 'translate-x-0' : 'translate-x-full'}`}>
         
         {/* Full Page Sticky Header */}
-        <div className="sticky top-0 z-10 bg-zinc-950/90 backdrop-blur border-b border-zinc-800 p-4 flex items-center justify-between">
-            <button onClick={() => setIsDetailPanelOpen(false)} className="p-2 bg-zinc-800 hover:bg-zinc-700 rounded-full text-white transition-colors border border-zinc-700">
-                <ChevronLeft size={24}/>
+        <div className="sticky top-0 z-10 bg-zinc-950/90 backdrop-blur border-b border-zinc-800 p-4 flex items-center justify-between gap-2">
+            <button
+                onClick={() => {
+                    if (poiDetailHistory.length > 0) {
+                        const prevPoi = poiDetailHistory[poiDetailHistory.length - 1];
+                        setPoiDetailHistory(prev => prev.slice(0, -1));
+                        setSelectedPoi(prevPoi);
+                        if (detailScrollRef.current) detailScrollRef.current.scrollTop = 0;
+                    } else {
+                        setIsDetailPanelOpen(false);
+                    }
+                }}
+                className="p-2 bg-zinc-800 hover:bg-zinc-700 rounded-full text-white transition-colors border border-zinc-700 flex items-center gap-1.5 cursor-pointer max-w-[60%]"
+                title={poiDetailHistory.length > 0 ? `Torna a ${poiDetailHistory[poiDetailHistory.length - 1].name}` : 'Chiudi dettagli'}
+            >
+                <ChevronLeft size={24} className="shrink-0"/>
+                {poiDetailHistory.length > 0 && (
+                    <span className="text-xs font-semibold pr-2 truncate text-zinc-200">
+                        {poiDetailHistory[poiDetailHistory.length - 1].name}
+                    </span>
+                )}
             </button>
             <div className="flex gap-2">
                 <button onClick={handleShowOnMap} className="p-2 bg-zinc-800 rounded-xl text-zinc-400 hover:text-white border border-zinc-700" title="Vedi su Mappa"><MapIcon size={20}/></button>
@@ -7425,14 +7490,26 @@ ${trkptsXml}
                             <h3 className="text-sm font-bold text-zinc-500 uppercase tracking-wider mb-4 flex items-center gap-2"><Droplets size={16}/> Fonti d'acqua vicine</h3>
                             <div className="space-y-3">
                                 {nearestWaterSources.map(water => (
-                                    <div key={water.id} onClick={() => setSelectedPoi(water)} className="flex items-center justify-between p-4 bg-zinc-900/50 hover:bg-zinc-900 border border-zinc-800 rounded-2xl cursor-pointer transition-colors group">
+                                    <div
+                                        key={water.id}
+                                        onClick={() => {
+                                            if (selectedPoi) {
+                                                setPoiDetailHistory(prev => [...prev, selectedPoi]);
+                                            }
+                                            setSelectedPoi(water);
+                                            if (detailScrollRef.current) detailScrollRef.current.scrollTop = 0;
+                                        }}
+                                        className="flex items-center justify-between p-4 bg-zinc-900/50 hover:bg-zinc-900 border border-zinc-800 rounded-2xl cursor-pointer transition-colors group"
+                                    >
                                         <div className="flex items-center gap-4">
                                             <div className="w-10 h-10 rounded-full bg-blue-900/20 text-blue-400 flex items-center justify-center group-hover:bg-blue-600 group-hover:text-white transition-colors border border-blue-500/20">
                                                 <Droplets size={18}/>
                                             </div>
                                             <div>
                                                 <div className="text-base font-bold text-zinc-200">{water.name}</div>
-                                                <div className="text-xs text-zinc-500 font-mono">{water.altitude}m • {(water as any).distance.toFixed(1)}km</div>
+                                                <div className="text-xs text-zinc-500 font-mono">
+                                                    {water.altitude > 0 ? `${water.altitude}m` : 'Quota...'} • {(water as any).distance.toFixed(1)}km
+                                                </div>
                                             </div>
                                         </div>
                                         <ChevronRight size={20} className="text-zinc-600 group-hover:text-white transition-colors"/>
